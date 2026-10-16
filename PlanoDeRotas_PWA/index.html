@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-16-empresa-1";
+const APP_BUILD = "2026-10-16-empresa-2";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -4708,6 +4708,45 @@ function exportRows(coll, docs) {
     });
     return rows;
 }
+// Colunas conhecidas (ver comentários junto a metas_sales / metas_forecast / metas_targets).
+function exportRowHeaders(coll, id) {
+    if (coll === "metas_targets") return ["Vendedor", "Código artigo", "Meta", "Base"];
+    if (coll === "metas_forecast") return ["Código artigo", "Caixas", "Descrição", "Família", "Subfamília"];
+    if (coll === "metas_sales") {
+        if (id === "aging") return ["Cliente", "Nome", "Vendedor", "Total", "Não vencido", "1-30 dias", "31-60 dias", "61-90 dias", "91-180 dias", "+180 dias", "Limite de crédito"];
+        if (id === "ful-index") return ["Mês"];
+        if (/^ful-\d{4}-\d{2}$/.test(id)) return ["Tipo", "Vendedor", "Código artigo", "Qtd vendida", "Kz vendido", "Qtd faturada", "Kz faturado", "Vendido (T)", "Faturado (T)"];
+        if (/^\d{4}-\d{2}$/.test(id)) return ["Vendedor", "Código artigo", "Quantidade"];
+    }
+    return [];
+}
+// Documentos com uma lista "rows" (cada linha guardada como lista) -> uma folha por documento.
+function exportRowSheets(coll, docs) {
+    const out = [];
+    docs.forEach(({ id, data }) => {
+        if (!Array.isArray(data.rows)) return;
+        const head = exportRowHeaders(coll, id);
+        const rows = data.rows.map((r) => {
+            let a = r;
+            if (typeof a === "string" && a[0] === "[") { try { a = JSON.parse(a); } catch (e) { } }
+            if (!Array.isArray(a)) a = [a];
+            const o = {};
+            a.forEach((v, i) => { o[head[i] || ("Coluna " + (i + 1))] = exportCell(v); });
+            return o;
+        });
+        out.push({ name: (EXPORT_SHEET_NAMES[coll] || coll) + " " + id, rows });
+    });
+    return out;
+}
+// Documentos com um mapa "map" (equipa, artigos) -> uma linha por entrada.
+function exportMapRows(docs, keyName) {
+    const rows = [];
+    docs.forEach(({ data }) => {
+        if (!data.map || typeof data.map !== "object") return;
+        Object.entries(data.map).forEach(([k, v]) => rows.push(Object.assign({ [keyName]: k }, exportFlat(v && typeof v === "object" ? v : { valor: v }))));
+    });
+    return rows;
+}
 function exportDownloadBlob(blob, name) {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = name;
@@ -4731,7 +4770,7 @@ async function empresaExportAll(onProgress) {
         catch (e) { throw new Error("Não foi possível ler \"" + c + "\" do servidor. Verifique a internet e tente novamente."); }
         all[c] = docs.map((d) => {
             const data = Object.assign({}, d.data());
-            if (c === "settings") EXPORT_PRIVATE_FIELDS.forEach((f) => delete data[f]);
+            if (c === "settings") Object.keys(data).forEach((f) => { if (EXPORT_PRIVATE_FIELDS.includes(f) || /^pins?[._]/i.test(f) || /pin$/i.test(f)) delete data[f]; });
             return { id: d.id, data };
         });
     }
@@ -4740,11 +4779,21 @@ async function empresaExportAll(onProgress) {
     const safe = (EMPRESA.nome || "empresa").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, "") || "empresa";
     const wb = XLSX.utils.book_new();
     const readme = [{ Item: "Empresa", Valor: EMPRESA.nome }, { Item: "Exportado em", Valor: new Date().toLocaleString("pt-PT") }, { Item: "Nota", Valor: "Cópia de todos os dados da empresa guardados na aplicação. Os PINs de acesso não estão incluídos. A cópia completa e exata está no ficheiro .json." }];
+    const usedNames = new Set(["Leia-me"]);
+    const sheetName = (n) => { let b = n.replace(/[\\\/\?\*\[\]:]/g, "-").slice(0, 31), x = b, i = 2; while (usedNames.has(x)) x = b.slice(0, 28) + " " + (i++); usedNames.add(x); return x; };
     EXPORT_COLLECTIONS.forEach((c) => {
-        const rows = exportRows(c, all[c]);
+        if (["metas_sales", "metas_targets", "metas_forecast"].includes(c)) {
+            const sheets = exportRowSheets(c, all[c]);
+            const n = sheets.reduce((t, x) => t + x.rows.length, 0);
+            counts.push([EXPORT_SHEET_NAMES[c] || c, all[c].length, n]);
+            readme.push({ Item: (EXPORT_SHEET_NAMES[c] || c), Valor: all[c].length + " documento(s), " + n + " linha(s), em folhas separadas" });
+            sheets.forEach((x) => { if (x.rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(x.rows), sheetName(x.name)); });
+            return;
+        }
+        const rows = c === "metas_team" ? exportMapRows(all[c], "Nome") : c === "metas_items" ? exportMapRows(all[c], "Código artigo") : exportRows(c, all[c]);
         counts.push([EXPORT_SHEET_NAMES[c] || c, all[c].length, rows.length]);
         readme.push({ Item: (EXPORT_SHEET_NAMES[c] || c), Valor: all[c].length + " documento(s), " + rows.length + " linha(s)" });
-        if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), (EXPORT_SHEET_NAMES[c] || c).slice(0, 31));
+        if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), sheetName(EXPORT_SHEET_NAMES[c] || c));
     });
     const ws0 = XLSX.utils.json_to_sheet(readme);
     XLSX.utils.book_append_sheet(wb, ws0, "Leia-me");

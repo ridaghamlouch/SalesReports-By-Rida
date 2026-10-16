@@ -19,6 +19,8 @@
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-check-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -75,6 +77,87 @@ const DAY_PT = {
     Thursday: "Quinta-feira", Friday: "Sexta-feira", Saturday: "Sábado", Sunday: "Domingo"
 };
 const PRODUCTS = ["Glória", "AMA", "Ultra", "Só Lava", "Outro"];
+// ======================= EMPRESA: dados da empresa (editáveis em Administração → Empresa) =======================
+// Tudo o que é próprio da empresa (nome, logótipo, marcas, canais, nomes dos códigos) fica aqui e
+// no documento Firestore "settings/empresa" - não espalhado pelo código. Os valores por defeito são
+// os atuais, por isso a app aparece exatamente igual até alguém mudar alguma coisa.
+const EMPRESA_DEFAULT = {
+    nome: "BASEL ANGOLA",
+    logo: "", // imagem (data URL); vazio = icon-512.png
+    marcas: [
+        { nome: "Ultra", logo: "logo_ultra.png" },
+        { nome: "Glória", logo: "logo_gloria.png" },
+        { nome: "AMA", logo: "logo_ama.png" },
+        { nome: "Só Lava", logo: "logo_solava.png" },
+    ],
+    grupos: { informal: "Informal Luanda", prov: "Províncias", cashvan: "Cash Van", formal: "Formal" },
+    canais: [
+        { codigo: "INFORMAL LUANDA", nome: "Informal Luanda", grupo: "informal" },
+        { codigo: "CASHVAN", nome: "Cash Van", grupo: "cashvan" },
+        { codigo: "CABINDA PROVINCE", nome: "Cabinda", grupo: "prov" },
+        { codigo: "HUAMBO PROVINCE", nome: "Huambo", grupo: "prov" },
+        { codigo: "LOBITO PROVINCE", nome: "Lobito", grupo: "prov" },
+        { codigo: "LUBANGO PROVINCE", nome: "Lubango", grupo: "prov" },
+        { codigo: "MALANJE PROVINCE", nome: "Malanje", grupo: "prov" },
+        { codigo: "SAURIMO PROVINCE", nome: "Saurimo", grupo: "prov" },
+    ],
+    codigo1: { nome: "SAP", mostrar: true },       // código principal do cliente (client.id)
+    codigo2: { nome: "Primavera", mostrar: true }, // código secundário / antigo (client.oldCode)
+};
+const EMPRESA_LS_KEY = "empresa_cache_v1";
+const EMPRESA_GRUPOS = ["informal", "prov", "cashvan", "formal"];
+function empresaClone(o) { return JSON.parse(JSON.stringify(o)); }
+function empresaMerge(data) {
+    const d = data || {}, D = EMPRESA_DEFAULT;
+    const cod = (x, def) => ({ nome: (x && String(x.nome || "").trim()) || def.nome, mostrar: x && x.mostrar === false ? false : true });
+    return {
+        nome: typeof d.nome === "string" && d.nome.trim() ? d.nome.trim() : D.nome,
+        logo: typeof d.logo === "string" ? d.logo : D.logo,
+        marcas: Array.isArray(d.marcas) ? d.marcas.filter((m) => m && m.nome).map((m) => ({ nome: String(m.nome), logo: String(m.logo || "") })) : empresaClone(D.marcas),
+        grupos: Object.assign({}, D.grupos, d.grupos || {}),
+        canais: Array.isArray(d.canais) && d.canais.length ? d.canais.filter((c) => c && c.codigo).map((c) => ({ codigo: String(c.codigo).toUpperCase().trim(), nome: String(c.nome || c.codigo), grupo: EMPRESA_GRUPOS.includes(c.grupo) ? c.grupo : "formal" })) : empresaClone(D.canais),
+        codigo1: cod(d.codigo1, D.codigo1),
+        codigo2: cod(d.codigo2, D.codigo2),
+    };
+}
+let EMPRESA = (() => { try { const c = localStorage.getItem(EMPRESA_LS_KEY); if (c) return empresaMerge(JSON.parse(c)); } catch (e) { } return empresaMerge(null); })();
+// Aplica a configuração às listas que o resto da app já usa (alteradas no próprio sítio, para que
+// todos os ecrãs vejam os novos nomes sem mais alterações). Chamado depois de todo o script carregar.
+function empresaApply(data, fromServer) {
+    EMPRESA = empresaMerge(data);
+    if (fromServer) { try { localStorage.setItem(EMPRESA_LS_KEY, JSON.stringify(data || {})); } catch (e) { } }
+    try { Object.assign(MT_GRP_LABEL, EMPRESA.grupos); } catch (e) { }
+    try { LG_TABS.forEach((t) => { if (EMPRESA.grupos[t[0]]) t[1] = EMPRESA.grupos[t[0]]; }); } catch (e) { }
+    try { ROUTE_CHANNELS.splice(0, ROUTE_CHANNELS.length, ...EMPRESA.canais.map((c) => [c.codigo, c.nome])); } catch (e) { }
+}
+// Colunas de código do cliente para os ficheiros Excel, com os nomes escolhidos pela empresa.
+function empresaCodCols(oldCode, sapCode) {
+    const o = {};
+    if (EMPRESA.codigo2.mostrar) o["Código " + EMPRESA.codigo2.nome] = oldCode || "";
+    if (EMPRESA.codigo1.mostrar) o["Código " + EMPRESA.codigo1.nome] = sapCode || "";
+    return o;
+}
+// Reduz uma imagem escolhida pelo utilizador (máx. 256 px) para caber no documento da empresa.
+function empresaResizeImage(file, max) {
+    return new Promise((resolve, reject) => {
+        const rd = new FileReader();
+        rd.onerror = () => reject(new Error("Não foi possível ler a imagem."));
+        rd.onload = () => {
+            const img = new Image();
+            img.onerror = () => reject(new Error("Ficheiro de imagem inválido."));
+            img.onload = () => {
+                const k = Math.min(1, (max || 256) / Math.max(img.naturalWidth, img.naturalHeight));
+                const cv = document.createElement("canvas");
+                cv.width = Math.max(1, Math.round(img.naturalWidth * k));
+                cv.height = Math.max(1, Math.round(img.naturalHeight * k));
+                cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+                resolve(cv.toDataURL("image/png"));
+            };
+            img.src = rd.result;
+        };
+        rd.readAsDataURL(file);
+    });
+}
 // Maximum number of "focus products" the admin can highlight for the team at once.
 const FOCUS_MAX = 10;
 function slugify(name) {
@@ -186,9 +269,29 @@ const firebaseConfig = {
     messagingSenderId: "312724936568",
     appId: "1:312724936568:web:24e9cedc4f4d9b98025a8d",
 };
+// Chave do reCAPTCHA v3 para o Firebase App Check (opcional). Vazio = desligado.
+const APP_CHECK_SITE_KEY = "";
 let db = null;
 try {
     firebase.initializeApp(firebaseConfig);
+    // Segurança (ver firestore.rules): cada telemóvel entra no Firebase com uma sessão anónima,
+    // para que as regras possam recusar quem não usa a app. Se o "Anonymous" ainda não estiver
+    // ativo no Firebase, a app continua a funcionar como antes.
+    try {
+        if (APP_CHECK_SITE_KEY && firebase.appCheck) firebase.appCheck().activate(new firebase.appCheck.ReCaptchaV3Provider(APP_CHECK_SITE_KEY), true);
+    }
+    catch (e) { console.error("App Check init failed", e); }
+    try {
+        const auth = firebase.auth();
+        auth.onAuthStateChanged((u) => {
+            if (u) return;
+            auth.signInAnonymously().then(() => {
+                // primeira entrada neste telemóvel: recarrega uma vez para que tudo seja lido já com sessão
+                try { if (!localStorage.getItem("anon_auth_ok")) { localStorage.setItem("anon_auth_ok", "1"); location.reload(); } } catch (e) { }
+            }).catch((e) => console.warn("Anonymous sign-in not available", e && e.code));
+        });
+    }
+    catch (e) { console.error("Auth init failed", e); }
     db = firebase.firestore();
     db.enablePersistence({ synchronizeTabs: true }).catch(() => { });
 }
@@ -198,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-10-ranking-foco-6";
+const APP_BUILD = "2026-10-16-empresa-1";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -572,7 +675,7 @@ async function exportOrderAsPDF(order, client, performerName, performerRole, pro
     doc.setFillColor(30, 58, 138);
     doc.rect(0, 0, pageWidth, 32, "F");
     try {
-        const logoDataUrl = await loadImageAsDataURL("icon-512.png");
+        const logoDataUrl = await loadImageAsDataURL(EMPRESA.logo || "icon-512.png");
         doc.addImage(logoDataUrl, "PNG", 14, 5, 22, 22);
     }
     catch (e) {
@@ -581,7 +684,7 @@ async function exportOrderAsPDF(order, client, performerName, performerRole, pro
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(15);
     doc.setFont(undefined, "bold");
-    doc.text("BASEL ANGOLA", 42, 16);
+    doc.text(String(EMPRESA.nome || "").toUpperCase(), 42, 16);
     doc.setFontSize(10);
     doc.setFont(undefined, "normal");
     doc.text("Fatura Proforma", 42, 23);
@@ -606,12 +709,12 @@ async function exportOrderAsPDF(order, client, performerName, performerRole, pro
     y += 6;
     doc.text(client.name || "", 14, y);
     y += 5;
-    if (client.oldCode) {
-        doc.text(`Primavera: ${client.oldCode}`, 14, y);
+    if (client.oldCode && EMPRESA.codigo2.mostrar) {
+        doc.text(`${EMPRESA.codigo2.nome}: ${client.oldCode}`, 14, y);
         y += 5;
     }
-    if (client.id) {
-        doc.text(`SAP: ${client.id}`, 14, y);
+    if (client.id && EMPRESA.codigo1.mostrar) {
+        doc.text(`${EMPRESA.codigo1.nome}: ${client.id}`, 14, y);
         y += 5;
     }
     if (client.market) {
@@ -713,8 +816,7 @@ function exportOrdersHistoryToExcel(history, filenamePrefix) {
 function exportOverdueToExcel(rows) {
     const data = rows.map((r) => ({
         Cliente: r.client,
-        "Código Primavera": r.oldCode,
-        "Código SAP": r.clientId,
+        ...empresaCodCols(r.oldCode, r.clientId),
         Mercado: r.market,
         Vendedor: r.salesperson,
         Supervisor: r.supervisor,
@@ -827,8 +929,7 @@ function exportReportToExcel(rows, filenamePrefix) {
         Data: formatDatePT(r.date),
         Hora: r.time,
         Cliente: r.client,
-        "Código Primavera": r.oldCode || "",
-        "Código SAP": r.clientId || "",
+        ...empresaCodCols(r.oldCode, r.clientId),
         Mercado: r.market,
         Vendedor: r.salesperson || "",
         Estado: r.status === "visited" ? "Visitado" : r.status === "skipped" ? "Não visitado" : r.status === "order_only" ? "Encomenda (sem visita)" : "Pendente",
@@ -864,8 +965,7 @@ function exportCombinedReportToExcel(rows, filenamePrefix) {
         "Realizado por": r.performedBy || "",
         Papel: r.role || "",
         Cliente: r.client,
-        "Código Primavera": r.oldCode || "",
-        "Código SAP": r.clientId || "",
+        ...empresaCodCols(r.oldCode, r.clientId),
         Mercado: r.market,
         Vendedor: r.salesperson || "",
         Estado: r.status === "visited" ? "Visitado" : r.status === "skipped" ? "Não visitado" : r.status === "order_only" ? "Encomenda (sem visita)" : "Pendente",
@@ -4496,6 +4596,8 @@ function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fk
 const LG_TABS = [["informal", "Informal Luanda"], ["prov", "Províncias"], ["cashvan", "Cash Van"]];
 function lgTabOf(ch) {
     const c = String(ch || "").toUpperCase();
+    const cfg = c && EMPRESA.canais.find((x) => x.codigo === c.trim());
+    if (cfg) return cfg.grupo;
     if (!c || c.includes("INFORMAL")) return "informal";
     if (c.includes("PROVINC")) return "prov";
     if (c.includes("CASH")) return "cashvan";
@@ -4570,6 +4672,180 @@ function BackHeader_({ title, subtitle, onBack }) {
 
 // Route files are imported per channel: each import replaces only that channel's clients
 const ROUTE_CHANNELS = [["INFORMAL LUANDA", "Informal Luanda"], ["CASHVAN", "Cash Van"], ["CABINDA PROVINCE", "Cabinda"], ["HUAMBO PROVINCE", "Huambo"], ["LOBITO PROVINCE", "Lobito"], ["LUBANGO PROVINCE", "Lubango"], ["MALANJE PROVINCE", "Malanje"], ["SAURIMO PROVINCE", "Saurimo"]];
+// ======================= EMPRESA: exportar todos os dados =======================
+// Para entregar à empresa (por exemplo, no dia em que sair): descarrega TODOS os dados guardados no
+// Firebase num ficheiro Excel legível + uma cópia completa em JSON. Os PINs de acesso não são incluídos.
+const EXPORT_COLLECTIONS = ["clients", "products", "settings", "visits", "sup_visits", "admin_visits", "orders", "metas_team", "metas_items", "metas_meta", "metas_targets", "metas_sales", "metas_forecast"];
+const EXPORT_PRIVATE_FIELDS = ["pins", "adminPin", "ownerPin"];
+const EXPORT_SINGLE_DOCS = { clients: ["current"], products: ["current"], settings: ["app", "empresa"], metas_meta: ["index"], metas_items: ["current"], metas_team: ["current"] };
+const EXPORT_SHEET_NAMES = { clients: "Clientes", products: "Produtos", settings: "Definicoes", visits: "Visitas vendedores", sup_visits: "Visitas supervisores", admin_visits: "Visitas administracao", orders: "Encomendas", metas_team: "Equipa", metas_items: "Artigos metas", metas_meta: "Metas indice", metas_targets: "Metas", metas_sales: "Vendas", metas_forecast: "Previsoes" };
+function exportCell(v) {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "object" && typeof v.toDate === "function") { try { return v.toDate().toISOString(); } catch (e) { return ""; } }
+    if (typeof v === "object") { const s = JSON.stringify(v); return s.length > 32000 ? s.slice(0, 32000) + "…(ver JSON)" : s; }
+    if (typeof v === "string" && v.length > 32000) return v.slice(0, 32000) + "…(ver JSON)";
+    return v;
+}
+function exportFlat(obj, prefix) {
+    const o = {};
+    Object.entries(obj || {}).forEach(([k, v]) => {
+        const key = prefix ? prefix + "." + k : k;
+        if (v && typeof v === "object" && !Array.isArray(v) && typeof v.toDate !== "function" && !prefix && Object.keys(v).length <= 30) Object.assign(o, exportFlat(v, key));
+        else o[key] = exportCell(v);
+    });
+    return o;
+}
+function exportRows(coll, docs) {
+    const rows = [];
+    docs.forEach(({ id, data }) => {
+        if (Array.isArray(data.data)) data.data.forEach((it) => rows.push(Object.assign({ Documento: id }, exportFlat(it && typeof it === "object" ? it : { valor: it }))));
+        else if (data.entries && typeof data.entries === "object" && !Array.isArray(data.entries)) {
+            const rest = Object.assign({}, data); delete rest.entries;
+            Object.entries(data.entries).forEach(([k, e]) => rows.push(Object.assign({ Documento: id, Chave: k }, exportFlat(e && typeof e === "object" ? e : { valor: e }), exportFlat(rest, "doc"))));
+            if (!Object.keys(data.entries).length) rows.push(Object.assign({ Documento: id }, exportFlat(rest)));
+        }
+        else rows.push(Object.assign({ Documento: id }, exportFlat(data)));
+    });
+    return rows;
+}
+function exportDownloadBlob(blob, name) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+async function empresaExportAll(onProgress) {
+    if (!db) throw new Error("Sem ligação ao Firebase.");
+    const all = {}, counts = [];
+    for (const c of EXPORT_COLLECTIONS) {
+        onProgress && onProgress("A ler " + (EXPORT_SHEET_NAMES[c] || c) + "…");
+        let docs;
+        try {
+            if (EXPORT_SINGLE_DOCS[c]) {
+                // coleções de documento fixo: as regras do Firestore só deixam ler cada documento pelo nome
+                docs = [];
+                for (const id of EXPORT_SINGLE_DOCS[c]) { const d = await db.doc(c + "/" + id).get({ source: "server" }); if (d.exists) docs.push(d); }
+            }
+            else docs = (await db.collection(c).get({ source: "server" })).docs;
+        }
+        catch (e) { throw new Error("Não foi possível ler \"" + c + "\" do servidor. Verifique a internet e tente novamente."); }
+        all[c] = docs.map((d) => {
+            const data = Object.assign({}, d.data());
+            if (c === "settings") EXPORT_PRIVATE_FIELDS.forEach((f) => delete data[f]);
+            return { id: d.id, data };
+        });
+    }
+    onProgress && onProgress("A criar o ficheiro Excel…");
+    const stamp = todayISO();
+    const safe = (EMPRESA.nome || "empresa").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, "") || "empresa";
+    const wb = XLSX.utils.book_new();
+    const readme = [{ Item: "Empresa", Valor: EMPRESA.nome }, { Item: "Exportado em", Valor: new Date().toLocaleString("pt-PT") }, { Item: "Nota", Valor: "Cópia de todos os dados da empresa guardados na aplicação. Os PINs de acesso não estão incluídos. A cópia completa e exata está no ficheiro .json." }];
+    EXPORT_COLLECTIONS.forEach((c) => {
+        const rows = exportRows(c, all[c]);
+        counts.push([EXPORT_SHEET_NAMES[c] || c, all[c].length, rows.length]);
+        readme.push({ Item: (EXPORT_SHEET_NAMES[c] || c), Valor: all[c].length + " documento(s), " + rows.length + " linha(s)" });
+        if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), (EXPORT_SHEET_NAMES[c] || c).slice(0, 31));
+    });
+    const ws0 = XLSX.utils.json_to_sheet(readme);
+    XLSX.utils.book_append_sheet(wb, ws0, "Leia-me");
+    wb.SheetNames.unshift(wb.SheetNames.pop()); // "Leia-me" como primeira folha
+    XLSX.writeFile(wb, "Dados_" + safe + "_" + stamp + ".xlsx");
+    const json = JSON.stringify({ empresa: EMPRESA.nome, exportadoEm: new Date().toISOString(), colecoes: all }, (k, v) => (v && typeof v === "object" && typeof v.toDate === "function") ? v.toDate().toISOString() : v, 1);
+    exportDownloadBlob(new Blob([json], { type: "application/json" }), "Dados_" + safe + "_" + stamp + ".json");
+    return counts;
+}
+// ======================= EMPRESA: ecrã de definições =======================
+function EmpresaSettings() {
+    const [cfg, setCfg] = useState(() => empresaClone(EMPRESA));
+    const [msg, setMsg] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [exp, setExp] = useState({ busy: false, text: "", err: false });
+    const set = (patch) => { setCfg(Object.assign({}, cfg, patch)); setMsg(null); };
+    const inp = "w-full border border-stone-300 rounded-lg px-3 py-2 text-sm bg-white";
+    const card = "bg-white border border-stone-200 rounded-xl p-4 mb-3";
+    const h = (t, sub) => mtH("div", { className: "mb-2" }, mtH("div", { className: "text-sm font-bold text-stone-800" }, t), sub && mtH("div", { className: "text-xs text-stone-500" }, sub));
+    const pickImage = (onImg) => {
+        const f = document.createElement("input"); f.type = "file"; f.accept = "image/*";
+        f.onchange = async () => { const file = f.files && f.files[0]; if (!file) return; try { onImg(await empresaResizeImage(file, 256)); } catch (e) { setMsg({ err: true, text: String(e.message || e) }); } };
+        f.click();
+    };
+    const save = async () => {
+        const clean = empresaMerge(cfg);
+        if (payloadBytes(clean) > FIRESTORE_DOC_LIMIT_BYTES) return setMsg({ err: true, text: "As imagens são grandes demais (" + fmtKB(payloadBytes(clean)) + "). Use logótipos mais pequenos." });
+        const codes = clean.canais.map((c) => c.codigo);
+        if (new Set(codes).size !== codes.length) return setMsg({ err: true, text: "Há dois canais com o mesmo código." });
+        setBusy(true);
+        const ok = await fsSet("settings/empresa", clean, false);
+        setBusy(false);
+        if (!ok) return setMsg({ err: true, text: "Não foi possível gravar no Firebase. Verifique a ligação e tente novamente." });
+        empresaApply(clean, true);
+        setCfg(empresaClone(EMPRESA));
+        setMsg({ err: false, text: "Guardado. Todos os telemóveis vão ver as alterações." });
+    };
+    const reset = () => { if (confirm("Repor todos os valores originais? (Só fica definitivo depois de carregar em Guardar.)")) set(empresaClone(EMPRESA_DEFAULT)); };
+    const runExport = async () => {
+        setExp({ busy: true, text: "A começar…", err: false });
+        try {
+            const counts = await empresaExportAll((t) => setExp({ busy: true, text: t, err: false }));
+            const total = counts.reduce((s, c) => s + c[1], 0);
+            setExp({ busy: false, err: false, text: "Concluído: " + total + " documentos exportados. Foram descarregados 2 ficheiros (Excel e JSON)." });
+        }
+        catch (e) { setExp({ busy: false, err: true, text: String(e.message || e) }); }
+    };
+    const marcas = cfg.marcas, canais = cfg.canais;
+    const setMarca = (i, p) => set({ marcas: marcas.map((m, j) => j === i ? Object.assign({}, m, p) : m) });
+    const setCanal = (i, p) => set({ canais: canais.map((c, j) => j === i ? Object.assign({}, c, p) : c) });
+    const smallBtn = "text-xs border border-stone-300 bg-white rounded-lg px-2.5 py-1.5 font-semibold text-stone-700 active:bg-stone-100 shrink-0";
+    return mtH("div", { className: "p-4 max-w-xl mx-auto" },
+        mtH("div", { className: card },
+            h("Nome da empresa", "Aparece nas encomendas em PDF."),
+            mtH("input", { className: inp, value: cfg.nome, onChange: (e) => set({ nome: e.target.value }) })),
+        mtH("div", { className: card },
+            h("Logótipo", "Aparece no ecrã de entrada e nas encomendas em PDF."),
+            mtH("div", { className: "flex items-center gap-3" },
+                mtH("img", { src: cfg.logo || "icon-512.png", alt: "", className: "w-16 h-16 rounded-xl object-contain bg-white border border-stone-200" }),
+                mtH("button", { className: smallBtn, onClick: () => pickImage((d) => set({ logo: d })) }, "Alterar"),
+                cfg.logo && mtH("button", { className: smallBtn, onClick: () => set({ logo: "" }) }, "Usar o original"))),
+        mtH("div", { className: card },
+            h("Marcas", "Logótipos mostrados no topo do ecrã de entrada."),
+            marcas.map((m, i) => mtH("div", { key: i, className: "flex items-center gap-2 mb-2" },
+                mtH("img", { src: m.logo || "icon-192.png", alt: "", className: "w-12 h-8 object-contain bg-stone-50 border border-stone-200 rounded" }),
+                mtH("input", { className: inp, value: m.nome, onChange: (e) => setMarca(i, { nome: e.target.value }) }),
+                mtH("button", { className: smallBtn, onClick: () => pickImage((d) => setMarca(i, { logo: d })) }, "Logo"),
+                mtH("button", { className: smallBtn + " text-rose-700", onClick: () => set({ marcas: marcas.filter((_, j) => j !== i) }) }, "✕"))),
+            mtH("button", { className: smallBtn, onClick: () => set({ marcas: [...marcas, { nome: "Nova marca", logo: "" }] }) }, "+ Adicionar marca")),
+        mtH("div", { className: card },
+            h("Grupos de canais", "Nomes dos separadores usados nos rankings, rotas e relatórios."),
+            EMPRESA_GRUPOS.map((g) => mtH("div", { key: g, className: "flex items-center gap-2 mb-2" },
+                mtH("div", { className: "text-xs text-stone-400 w-16 shrink-0" }, g),
+                mtH("input", { className: inp, value: cfg.grupos[g] || "", onChange: (e) => set({ grupos: Object.assign({}, cfg.grupos, { [g]: e.target.value }) }) })))),
+        mtH("div", { className: card },
+            h("Canais", "O código tem de ser igual ao que aparece nos ficheiros importados."),
+            canais.map((c, i) => mtH("div", { key: i, className: "border border-stone-200 rounded-lg p-2 mb-2" },
+                mtH("div", { className: "flex gap-2 mb-1.5" },
+                    mtH("input", { className: inp, placeholder: "Código", value: c.codigo, onChange: (e) => setCanal(i, { codigo: e.target.value.toUpperCase() }) }),
+                    mtH("button", { className: smallBtn + " text-rose-700", onClick: () => set({ canais: canais.filter((_, j) => j !== i) }) }, "✕")),
+                mtH("div", { className: "flex gap-2" },
+                    mtH("input", { className: inp, placeholder: "Nome", value: c.nome, onChange: (e) => setCanal(i, { nome: e.target.value }) }),
+                    mtH("select", { className: inp, value: c.grupo, onChange: (e) => setCanal(i, { grupo: e.target.value }) }, EMPRESA_GRUPOS.map((g) => mtH("option", { key: g, value: g }, cfg.grupos[g] || g)))))),
+            mtH("button", { className: smallBtn, onClick: () => set({ canais: [...canais, { codigo: "", nome: "", grupo: "formal" }] }) }, "+ Adicionar canal")),
+        mtH("div", { className: card },
+            h("Códigos do cliente", "Nomes das colunas de código nos PDF e ficheiros Excel."),
+            [["codigo1", "Código principal"], ["codigo2", "Código secundário"]].map(([k, l]) => mtH("div", { key: k, className: "flex items-center gap-2 mb-2" },
+                mtH("div", { className: "text-xs text-stone-400 w-24 shrink-0" }, l),
+                mtH("input", { className: inp, value: cfg[k].nome, onChange: (e) => set({ [k]: Object.assign({}, cfg[k], { nome: e.target.value }) }) }),
+                mtH("label", { className: "flex items-center gap-1 text-xs text-stone-600 shrink-0" },
+                    mtH("input", { type: "checkbox", checked: cfg[k].mostrar, onChange: (e) => set({ [k]: Object.assign({}, cfg[k], { mostrar: e.target.checked }) }) }), "Mostrar")))),
+        msg && mtH("div", { className: "text-sm rounded-lg p-3 border mb-3 " + (msg.err ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-emerald-50 border-emerald-200 text-emerald-800") }, msg.text),
+        mtH("div", { className: "flex gap-2 mb-6" },
+            mtH("button", { disabled: busy, onClick: save, className: "flex-1 bg-blue-900 text-white rounded-lg py-3 text-sm font-semibold active:bg-blue-950 disabled:opacity-50" }, busy ? "A guardar…" : "Guardar"),
+            mtH("button", { onClick: reset, className: "bg-white border border-stone-300 text-stone-700 rounded-lg px-4 py-3 text-sm font-semibold active:bg-stone-100" }, "Repor originais")),
+        mtH("div", { className: "border-t-2 border-stone-200 pt-4" },
+            h("Exportar todos os dados", "Descarrega tudo o que está guardado (clientes, rotas, visitas, encomendas, metas e vendas) num ficheiro Excel e numa cópia completa em JSON. Os PINs não são incluídos. Use-o, por exemplo, para entregar os dados à empresa."),
+            exp.text && mtH("div", { className: "text-sm rounded-lg p-3 border mb-3 " + (exp.err ? "bg-rose-50 border-rose-200 text-rose-800" : "bg-stone-50 border-stone-200 text-stone-700") }, exp.text),
+            mtH("button", { disabled: exp.busy, onClick: runExport, className: "w-full bg-emerald-700 text-white rounded-lg py-3 text-sm font-semibold flex items-center justify-center gap-2 active:bg-emerald-800 disabled:opacity-50" },
+                mtH(Download, { size: 16 }), exp.busy ? "A exportar…" : "Exportar todos os dados")));
+}
 function routeChannelOf(c) { return (c && c.routeChannel) || "INFORMAL LUANDA"; }
 function RouteApp() {
     var _a, _b;
@@ -4967,6 +5243,13 @@ function RouteApp() {
                 setProductCatalog(data.data.map((p) => (Object.assign(Object.assign({}, p), { brand: norm(p.brand), group: norm(p.group), materialGroup: norm(p.materialGroup) }))));
             }
         });
+        return unsub;
+    }, []);
+    // ---- Load & subscribe: dados da empresa (nome, logótipos, canais...) ----
+    const [, setEmpresaTick] = useState(0);
+    useEffect(() => {
+        empresaApply(EMPRESA, false);
+        const unsub = fsSubscribeDoc("settings/empresa", (data) => { empresaApply(data, true); setEmpresaTick((t) => t + 1); });
         return unsub;
     }, []);
     // ---- Load & subscribe: settings (pins, adminPin, currentWeekLabel) ----
@@ -6386,12 +6669,9 @@ function RouteApp() {
     if (screen === "home") {
         return (React.createElement("div", { className: "h-full overflow-hidden bg-stone-50 flex flex-col items-center justify-center px-6 py-4 gap-4" },
             React.createElement("div", { className: "flex items-center justify-center gap-4 flex-wrap px-4" },
-                React.createElement("img", { src: "logo_ultra.png", alt: "Ultra", className: "h-8 object-contain" }),
-                React.createElement("img", { src: "logo_gloria.png", alt: "Gl\u00F3ria", className: "h-8 object-contain" }),
-                React.createElement("img", { src: "logo_ama.png", alt: "AMA", className: "h-8 object-contain" }),
-                React.createElement("img", { src: "logo_solava.png", alt: "S\u00F3 Lava", className: "h-8 object-contain" })),
+                EMPRESA.marcas.filter((m) => m.logo).map((m, i) => React.createElement("img", { key: i, src: m.logo, alt: m.nome, className: "h-8 object-contain" }))),
             React.createElement("div", { className: "text-center flex flex-col items-center gap-2" },
-                React.createElement("img", { src: "icon-512.png", alt: "Basel Angola", className: "w-20 h-20 rounded-2xl shadow-md object-contain bg-white" }),
+                React.createElement("img", { src: EMPRESA.logo || "icon-512.png", alt: EMPRESA.nome, className: "w-20 h-20 rounded-2xl shadow-md object-contain bg-white" }),
                 React.createElement("h1", { className: "text-xl font-bold text-blue-900 tracking-tight" }, "Bem-vindo"),
                 React.createElement("p", { className: "text-stone-500 text-sm" },
                     DAY_PT[dayName] || dayName,
@@ -6622,6 +6902,15 @@ function RouteApp() {
             React.createElement(BackHeader, { title: "Vendas da Empresa", subtitle: "Relat\u00F3rio SAP \u2014 todos os canais", onBack: () => setScreen(ownerAuthed ? "owner-panel" : "admin-panel") }),
             React.createElement(CompanySales, null)));
     }
+    if (screen === "admin-empresa") {
+        if (!adminAuthed) {
+            setScreen("admin-gate");
+            return null;
+        }
+        return (React.createElement("div", { className: "min-h-full bg-stone-50 pb-8" },
+            React.createElement(BackHeader, { title: "Empresa", subtitle: "Nome, logótipos, canais e exportação de dados", onBack: () => setScreen("admin-panel") }),
+            React.createElement(EmpresaSettings, null)));
+    }
     if (screen === "admin-pins") {
         if (!adminAuthed) {
             setScreen("admin-gate");
@@ -6825,7 +7114,10 @@ function RouteApp() {
                 React.createElement("div", { className: "border-t border-stone-200 pt-4 mt-2" },
                     React.createElement("button", { onClick: () => setScreen("admin-pins"), className: "w-full bg-white border border-stone-300 text-stone-700 rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2 active:bg-stone-100" },
                         React.createElement(Users, { size: 14 }),
-                        " PINs de acesso")),
+                        " PINs de acesso"),
+                    React.createElement("button", { onClick: () => setScreen("admin-empresa"), className: "w-full mt-2 bg-white border border-stone-300 text-stone-700 rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2 active:bg-stone-100" },
+                        React.createElement(Download, { size: 14 }),
+                        " Empresa e exportar dados")),
                 React.createElement("div", { className: "border-t-2 border-rose-200 pt-4 mt-2" },
                     React.createElement("div", { className: "text-xs font-bold text-rose-500 uppercase tracking-wide mb-2" }, "Zona de Perigo"),
                     React.createElement("div", { className: "bg-rose-50 border border-rose-200 rounded-xl p-4" },
@@ -7222,7 +7514,7 @@ function RouteApp() {
             const { overdue: overdueAll, loading } = adminOverdueData;
             const chOfId = {}; visitClients.forEach((c) => { chOfId[c.id] = lgTabOf(c.routeChannel); });
             const ovCount = (k) => k === "all" ? overdueAll.length : overdueAll.filter((o) => (chOfId[o.clientId] || "informal") === k).length;
-            const OV_CHANS = [["all", "Todos"], ["informal", "Informal Luanda"], ["prov", "Prov\u00EDncias"], ["cashvan", "Cash Van"]].filter(([k]) => k === "all" || visitClients.some((c) => lgTabOf(c.routeChannel) === k));
+            const OV_CHANS = [["all", "Todos"], ["informal", MT_GRP_LABEL.informal], ["prov", MT_GRP_LABEL.prov], ["cashvan", MT_GRP_LABEL.cashvan]].filter(([k]) => k === "all" || visitClients.some((c) => lgTabOf(c.routeChannel) === k));
             const ch = OV_CHANS.some(([k]) => k === adminChan) ? adminChan : "all";
             const overdue = ch === "all" ? overdueAll : overdueAll.filter((o) => (chOfId[o.clientId] || "informal") === ch);
             const chClients = ch === "all" ? visitClients : visitClients.filter((c) => lgTabOf(c.routeChannel) === ch);

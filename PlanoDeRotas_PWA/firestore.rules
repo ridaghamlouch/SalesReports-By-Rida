@@ -1,0 +1,166 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- helpers -------------------------------------------------------
+    // Only the app can read or write: every phone signs in automatically
+    // with an anonymous Firebase session (Authentication → Anonymous).
+    // Someone with just the project key and no session is refused.
+    function app() {
+      return request.auth != null;
+    }
+    // Day documents are named YYYY-MM-DD_<slug> (e.g. 2026-09-20_alazar)
+    function isDayDoc(id) {
+      return id.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}_[a-z0-9_]+$');
+    }
+    function validDayData() {
+      return request.resource.data.keys().hasOnly(['entries'])
+        && request.resource.data.entries is map
+        && request.resource.data.entries.size() <= 2000;
+    }
+    // the route list: "data" + its version number "v" (used to avoid re-downloading it)
+    function validListData() {
+      return request.resource.data.keys().hasOnly(['data', 'v'])
+        && request.resource.data.data is list
+        && (!('v' in request.resource.data) || request.resource.data.v is string);
+    }
+    function validProductData() {
+      return request.resource.data.keys().hasOnly(['data'])
+        && request.resource.data.data is list;
+    }
+    // Metas month documents are named YYYY-MM (e.g. 2026-09)
+    function isMonthId(id) {
+      return id.matches('^[0-9]{4}-[0-9]{2}$');
+    }
+    // Sales area also keeps: "aging" (client debts), "ful-YYYY-MM" (fulfilment), "ful-index",
+    // and the per-client detail "cli-YYYY-MM" / "ful-cli-YYYY-MM" (lets a new client list re-assign the data)
+    function isSalesDocId(id) {
+      return isMonthId(id) || id == 'aging' || id == 'ful-index'
+        || id.matches('^ful-[0-9]{4}-[0-9]{2}$') || id.matches('^(ful-)?cli-[0-9]{4}-[0-9]{2}$');
+    }
+
+    // ---- reference data: client list and product list (one doc each) ---
+    match /clients/current {
+      allow read: if app();
+      allow create, update: if app() && validListData();
+      allow delete: if false;
+    }
+    match /products/current {
+      allow read: if app();
+      allow create, update: if app() && validProductData();
+      allow delete: if false;
+    }
+
+    // ---- settings (PINs, week label, focus products, route list version) ----
+    // NOTE: PINs are still readable by anyone who opens the app. Rules alone
+    // cannot fix that without a real sign-in per person.
+    //
+    // On UPDATE we only check the fields that are actually being changed
+    // (diff/affectedKeys), not every field in the document. The existing
+    // settings/app document contains a few leftover top-level fields named like
+    // "pins.alazar" from an old app version; checking the whole document
+    // ("hasOnly" on all keys) would reject every write because of them.
+    function validSettingsValues() {
+      return (!('pins' in request.resource.data) || request.resource.data.pins is map)
+        && (!('focusProducts' in request.resource.data) || request.resource.data.focusProducts is map)
+        && (!('adminPin' in request.resource.data) || request.resource.data.adminPin is string)
+        && (!('ownerPin' in request.resource.data) || request.resource.data.ownerPin is string)
+        && (!('currentWeekLabel' in request.resource.data) || request.resource.data.currentWeekLabel in ['Week A', 'Week B'])
+        // weekLabelBySupervisor replaces currentWeekLabel as the PER-TEAM "current week" for a
+        // 2-week (A/B) cycle - {supervisorName: "Week A"|"Week B"}. currentWeekLabel itself is
+        // kept (above) only so existing/legacy data and any not-yet-updated client still works.
+        && (!('weekLabelBySupervisor' in request.resource.data) || request.resource.data.weekLabelBySupervisor is map)
+        && (!('routesVersion' in request.resource.data) || request.resource.data.routesVersion is string);
+    }
+    match /settings/app {
+      allow read: if app();
+      allow create: if app()
+        && request.resource.data.keys().hasOnly(['pins', 'adminPin', 'ownerPin', 'currentWeekLabel', 'focusProducts', 'weekLabelBySupervisor', 'routesVersion'])
+        && validSettingsValues();
+      allow update: if app()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pins', 'adminPin', 'ownerPin', 'currentWeekLabel', 'focusProducts', 'weekLabelBySupervisor', 'routesVersion'])
+        && validSettingsValues();
+      allow delete: if false;
+    }
+    // Company details (Administração → Empresa): name, logos, brands, channels, code names.
+    match /settings/empresa {
+      allow read: if app();
+      allow create, update: if app()
+        && request.resource.data.keys().hasOnly(['nome', 'logo', 'marcas', 'grupos', 'canais', 'codigo1', 'codigo2'])
+        && request.resource.data.nome is string
+        && request.resource.data.logo is string
+        && request.resource.data.marcas is list && request.resource.data.marcas.size() <= 30
+        && request.resource.data.grupos is map
+        && request.resource.data.canais is list && request.resource.data.canais.size() <= 100
+        && request.resource.data.codigo1 is map
+        && request.resource.data.codigo2 is map;
+      allow delete: if false;
+    }
+
+    // ---- daily activity: visits, supervisor visits, admin visits, orders
+    // Reads include "list" because the admin "reset visit data" buttons
+    // list a collection before deleting it. Deletes stay allowed for the same reason.
+    match /visits/{docId} {
+      allow read: if app();
+      allow create, update: if app() && isDayDoc(docId) && validDayData();
+      allow delete: if app();
+    }
+    match /sup_visits/{docId} {
+      allow read: if app();
+      allow create, update: if app() && isDayDoc(docId) && validDayData();
+      allow delete: if app();
+    }
+    match /admin_visits/{docId} {
+      allow read: if app();
+      allow create, update: if app() && isDayDoc(docId) && validDayData();
+      allow delete: if app();
+    }
+    match /orders/{docId} {
+      allow read: if app();
+      allow create, update: if app() && isDayDoc(docId) && validDayData();
+      allow delete: if app();
+    }
+
+    // ---- Metas de vendas (targets) --------------------------------------
+    match /metas_meta/index {
+      allow read: if app();
+      allow create, update: if app() && request.resource.data.keys().hasOnly(['targetMonths', 'salesMonths']);
+      allow delete: if false;
+    }
+    match /metas_items/current {
+      allow read: if app();
+      allow create, update: if app() && request.resource.data.keys().hasOnly(['map'])
+        && request.resource.data.map is map;
+      allow delete: if false;
+    }
+    match /metas_team/current {
+      allow read: if app();
+      allow create, update: if app() && request.resource.data.keys().hasOnly(['map', 'updated'])
+        && request.resource.data.map is map;
+      allow delete: if false;
+    }
+    match /metas_sales/{m} {
+      allow read: if app();
+      allow create, update: if app() && isSalesDocId(m)
+        && request.resource.data.keys().hasOnly(['rows', 'updated', 'file'])
+        && request.resource.data.rows is list;
+      allow delete: if false;
+    }
+    match /metas_forecast/{m} {
+      allow read: if app();
+      allow create, update: if app() && isMonthId(m)
+        && request.resource.data.keys().hasOnly(['rows', 'file', 'updated'])
+        && request.resource.data.rows is list;
+      allow delete: if false;
+    }
+    match /metas_targets/{m} {
+      allow read: if app();
+      allow create, update: if app() && isMonthId(m)
+        && request.resource.data.keys().hasOnly(['rows', 'histMonths', 'computed', 'notDistributed'])
+        && request.resource.data.rows is list;
+      allow delete: if false;
+    }
+
+    // Everything else is denied by default.
+  }
+}

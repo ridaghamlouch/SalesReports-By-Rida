@@ -13,9 +13,9 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
 <link rel="shortcut icon" href="icon-192.png" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-16-empresa-2";
+const APP_BUILD = "2026-10-16-seguro-1";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -347,6 +347,26 @@ function fsSubscribeDoc(path, callback) {
         return () => { };
     }
 }
+// Aviso visível quando uma gravação falha (antes falhava em silêncio e a visita/encomenda perdia-se).
+let fsFailTimer = null;
+function fsReportFail(path, e) {
+    try {
+        let bar = document.getElementById("fs-fail-bar");
+        if (!bar) {
+            bar = document.createElement("div");
+            bar.id = "fs-fail-bar";
+            bar.setAttribute("role", "alert");
+            bar.style.cssText = "position:fixed;left:12px;right:12px;bottom:max(16px,env(safe-area-inset-bottom));z-index:99998;background:#be123c;color:#fff;border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.35;box-shadow:0 6px 20px rgba(0,0,0,.25)";
+            bar.onclick = () => bar.remove();
+            document.body.appendChild(bar);
+        }
+        const why = e && e.code === "permission-denied" ? "o servidor recusou a gravação. Feche e volte a abrir a app (pode haver uma versão nova)." : "verifique a internet e tente de novo.";
+        bar.textContent = "Não foi possível gravar — " + why + " (toque para fechar)";
+        clearTimeout(fsFailTimer);
+        fsFailTimer = setTimeout(() => { try { bar.remove(); } catch (x) { } }, 15000);
+    }
+    catch (x) { }
+}
 async function fsSet(path, data, merge) {
     try {
         await db.doc(path).set(data, merge ? { merge: true } : undefined);
@@ -354,6 +374,7 @@ async function fsSet(path, data, merge) {
     }
     catch (e) {
         console.error("fsSet failed", path, e);
+        fsReportFail(path, e);
         return false;
     }
 }
@@ -364,8 +385,41 @@ async function fsUpdate(path, fields) {
     }
     catch (e) {
         console.error("fsUpdate failed", path, e);
+        fsReportFail(path, e);
         return false;
     }
+}
+// Grava UMA entrada de um documento do dia (visita/encomenda) sem tocar nas outras.
+// Antes gravava-se o dia inteiro a partir da cópia do telemóvel, o que podia apagar
+// entradas feitas noutro telemóvel. Cria o documento se ainda não existir.
+async function fsSetEntry(path, id, record) {
+    try {
+        await db.doc(path).set({ entries: { [id]: record } }, { mergeFields: [new firebase.firestore.FieldPath("entries", String(id))] });
+        return true;
+    }
+    catch (e) {
+        console.error("fsSetEntry failed", path, id, e);
+        fsReportFail(path, e);
+        return false;
+    }
+}
+// Apaga UMA entrada de um documento do dia.
+async function fsDeleteEntry(path, id) {
+    try {
+        await db.doc(path).update(new firebase.firestore.FieldPath("entries", String(id)), firebase.firestore.FieldValue.delete());
+        return true;
+    }
+    catch (e) {
+        if (e && e.code === "not-found") return true; // o dia ainda não existe: nada para apagar
+        console.error("fsDeleteEntry failed", path, id, e);
+        fsReportFail(path, e);
+        return false;
+    }
+}
+// Lê do servidor quando há rede (dados mais recentes); sem rede usa a cópia do telemóvel.
+async function fsGetDocFresh(path) {
+    try { const s = await db.doc(path).get({ source: "server" }); return s.exists ? s.data() : null; }
+    catch (e) { return fsGetDoc(path); }
 }
 function fsDeleteFieldValue() {
     return firebase.firestore.FieldValue.delete();
@@ -903,7 +957,8 @@ function RouteMapView({ points }) {
                 iconSize: [26, 26],
                 iconAnchor: [13, 26],
             });
-            L.marker([p.lat, p.lng], { icon }).addTo(map).bindPopup(`<b>${i + 1}. ${p.label}</b><br/>${p.market || ""} ${p.time ? "· " + p.time : ""}`);
+            const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+            L.marker([p.lat, p.lng], { icon }).addTo(map).bindPopup(`<b>${i + 1}. ${esc(p.label)}</b><br/>${esc(p.market)} ${p.time ? "· " + esc(p.time) : ""}`);
         });
         if (latlngs.length === 1) {
             map.setView(latlngs[0], 15);
@@ -5377,7 +5432,7 @@ function RouteApp() {
     const saveVisit = async (clientId, record) => {
         const updated = Object.assign(Object.assign({}, visits), { [clientId]: record });
         setVisits(updated);
-        await fsSet(`visits/${dateISO}_${activeRep.slug}`, { entries: updated }, false);
+        await fsSetEntry(`visits/${dateISO}_${activeRep.slug}`, clientId, record);
     };
     const [repWeekVisited, setRepWeekVisited] = useState({ key: "", ids: null });
     useEffect(() => {
@@ -5682,28 +5737,30 @@ function RouteApp() {
         if (!orderingSlug)
             return;
         const key = `orders/${dateISO}_${orderingSlug}`;
-        const current = await fsGetDoc(key);
+        // latest copy from the server, so the "Encomenda nº" is not counted from an old copy on the phone
+        const current = await fsGetDocFresh(key);
         const existingEntries = (current && current.entries) || {};
         // The order's position among this person's orders for the day (e.g. "Encomenda nº 11")
         // is assigned ONCE, the first time it's saved, and reused on every later edit - it must
         // never shift, or a number someone already wrote down would stop matching this order.
         const existingNumber = existingEntries[orderKey] && existingEntries[orderKey].orderNumber;
-        const orderNumber = existingNumber || Object.keys(existingEntries).filter((k) => k !== orderKey).length + 1;
+        const others = Object.keys(existingEntries).filter((k) => k !== orderKey);
+        const orderNumber = existingNumber || Math.max(others.length, ...others.map((k) => Number(existingEntries[k] && existingEntries[k].orderNumber) || 0)) + 1;
         const updated = Object.assign(Object.assign({}, existingEntries), { [orderKey]: { items, total, contactPhone: contactPhone || "", clientId, timestamp: new Date().toISOString(), orderNumber } });
-        await fsSet(key, { entries: updated }, false);
+        await fsSetEntry(key, orderKey, updated[orderKey]);
     };
     const deleteOrderEntry = async (orderKey, dateISO) => {
         if (!orderingSlug)
             return;
         const key = `orders/${dateISO}_${orderingSlug}`;
-        await fsUpdate(key, { [`entries.${orderKey}`]: fsDeleteFieldValue() });
+        await fsDeleteEntry(key, orderKey);
     };
     const startNewStandaloneOrder = async (client) => {
         if (!orderingSlug)
             return;
         const dateISO = todayISO();
         const key = `orders/${dateISO}_${orderingSlug}`;
-        const current = await fsGetDoc(key);
+        const current = await fsGetDocFresh(key);
         const entries = (current && current.entries) || {};
         const clientHasOrder = Object.entries(entries).some(([k, v]) => (v.clientId || k) === client.id);
         let orderKey = client.id;
@@ -5757,7 +5814,7 @@ function RouteApp() {
         const updated = Object.assign({}, visits);
         delete updated[client.id];
         setVisits(updated);
-        await fsSet(`visits/${dateISO}_${activeRep.slug}`, { entries: updated }, false);
+        await fsDeleteEntry(`visits/${dateISO}_${activeRep.slug}`, client.id);
     };
     const markSkipped = async (client) => {
         await saveVisit(client.id, { status: "skipped", notes: draftNote, timestamp: new Date().toISOString() });
@@ -5897,7 +5954,7 @@ function RouteApp() {
         const key = `sup_visits/${todayISO()}_${slugify(activeSupervisor)}`;
         const updated = Object.assign(Object.assign({}, supDayEntries), { [clientId]: record });
         setSupDayEntries(updated);
-        await fsSet(key, { entries: updated }, false);
+        await fsSetEntry(key, clientId, record);
     };
     const startSupVisit = async (client) => {
         if (supInProgressClientId && supInProgressClientId !== client.id)
@@ -5941,7 +5998,7 @@ function RouteApp() {
         delete updated[client.id];
         setSupDayEntries(updated);
         const key = `sup_visits/${todayISO()}_${slugify(activeSupervisor)}`;
-        await fsSet(key, { entries: updated }, false);
+        await fsDeleteEntry(key, client.id);
     };
     useEffect(() => {
         if (screen === "sup-dash") {
@@ -5969,12 +6026,11 @@ function RouteApp() {
     const saveAdminVisit = async () => {
         // Administração: only the day is kept (no location, no time)
         const key = `admin_visits/${todayISO()}_admin`;
-        const current = await fsGetDoc(key);
-        const updated = Object.assign(Object.assign({}, ((current && current.entries) || {})), { [adminVisitSelectedClient.id]: {
+        const ok = await fsSetEntry(key, adminVisitSelectedClient.id, {
                 status: "visited", notes: draftAdminVisitNote, order: draftAdminVisitOrder, payment: draftAdminVisitPayment,
                 date: todayISO(),
-            } });
-        await fsSet(key, { entries: updated }, false);
+            });
+        if (!ok) return;
         setAdminVisitMsg("Visita registada com sucesso.");
         setDraftAdminVisitNote("");
         setDraftAdminVisitOrder(null);

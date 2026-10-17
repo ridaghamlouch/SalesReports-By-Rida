@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-17-vendas-4";
+const APP_BUILD = "2026-10-17-vendas-5";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -2827,16 +2827,16 @@ function CompanySales() {
         cats.forEach((c) => {
             const cOpen = openCats.includes(c);
             body.push(mtH("tr", { key: c, onClick: () => toggle(openCats, setOpenCats, c), className: "cursor-pointer font-bold text-stone-900" },
-                mtH("td", { className: first + " bg-white border-t border-stone-200" }, mtH("span", { className: "text-amber-600" }, cOpen ? "\u25BE " : "\u25B8 "), c),
+                mtH("td", { className: first + " bg-white border-t border-stone-200" }, mtH("span", { className: "text-blue-600" }, cOpen ? "\u25BE " : "\u25B8 "), c),
                 ...ms.map((m) => mtH("td", { key: m, className: td + " bg-white border-t border-stone-200" }, num(cell(c, m)))),
-                multi && mtH("td", { key: "t", className: td + " bg-white border-t border-stone-200 text-amber-700" }, num(rowTot(c)))));
+                multi && mtH("td", { key: "t", className: td + " bg-white border-t border-stone-200 text-blue-900" }, num(rowTot(c)))));
             if (!cOpen) return;
             kids(c + "|", 2).forEach((sk) => {
                 const sOpen = openSubs.includes(sk), gl = kids(sk + "|", 3);
                 body.push(mtH("tr", { key: sk, onClick: () => toggle(openSubs, setOpenSubs, sk), className: "cursor-pointer text-stone-600" },
-                    mtH("td", { className: first + " bg-stone-50 pl-5" }, mtH("span", { className: "text-amber-600" }, sOpen ? "\u25BE " : "\u25B8 "), sk.split("|")[1]), ...cells(sk, "bg-stone-50")));
+                    mtH("td", { className: first + " bg-slate-50 pl-5" }, mtH("span", { className: "text-blue-600" }, sOpen ? "\u25BE " : "\u25B8 "), sk.split("|")[1]), ...cells(sk, "bg-slate-50")));
                 if (sOpen) gl.forEach((gk) => body.push(mtH("tr", { key: gk, className: "text-stone-500 text-[10.5px]" },
-                    mtH("td", { className: first + " bg-stone-100 pl-8" }, gk.split("|")[2]), ...cells(gk, "bg-stone-100"))));
+                    mtH("td", { className: first + " bg-slate-100 pl-8" }, gk.split("|")[2]), ...cells(gk, "bg-slate-100"))));
             });
         });
         const grand = (m) => cats.reduce((a, c) => a + cell(c, m), 0);
@@ -2847,15 +2847,15 @@ function CompanySales() {
             cats.length === 0 ? mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.") :
                 mtH("div", { className: "overflow-x-auto rounded-lg border border-stone-200" },
                     mtH("table", { className: "text-[11px] border-separate", style: { borderSpacing: 0 } },
-                        mtH("thead", null, mtH("tr", { className: "bg-stone-900 text-stone-400" },
-                            mtH("th", { className: first + " bg-stone-900 font-semibold" }, "Categoria"),
+                        mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
+                            mtH("th", { className: first + " bg-blue-900 font-semibold" }, "Categoria"),
                             ms.map((m) => mtH("th", { key: m, className: td + " font-semibold" }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + (calc.sm.some((x) => x.slice(0, 4) !== m.slice(0, 4)) ? " " + m.slice(2, 4) : ""))),
                             multi && mtH("th", { className: td + " font-semibold" }, "Total"))),
                         mtH("tbody", null, ...body,
                             mtH("tr", { key: "_tot", className: "font-bold text-white" },
-                                mtH("td", { className: first + " bg-stone-900" }, "Total"),
-                                ...ms.map((m) => mtH("td", { key: m, className: td + " bg-stone-900" }, num(grand(m)))),
-                                multi && mtH("td", { key: "t", className: td + " bg-stone-900 text-amber-400" }, num(ms.reduce((a, m) => a + grand(m), 0))))))),
+                                mtH("td", { className: first + " bg-blue-900" }, "Total"),
+                                ...ms.map((m) => mtH("td", { key: m, className: td + " bg-blue-900" }, num(grand(m)))),
+                                multi && mtH("td", { key: "t", className: td + " bg-blue-900 text-white" }, num(ms.reduce((a, m) => a + grand(m), 0))))))),
             ms.length === 1 && mtH("div", { className: "text-[10px] text-stone-400 mt-1.5" }, "Escolha mais meses no bot\u00e3o \uD83D\uDCC5 (ou Todos) para os ver lado a lado."));
     };
     // filters: two buttons (\uD83D\uDCC5 meses / \uD83C\uDFF7\uFE0F categorias), each opens a small panel under them
@@ -2876,9 +2876,9 @@ function CompanySales() {
     };
     const monthBtnLabel = allMonths ? "Todos os meses" : monthsLabel(calc.sm);
     const catBtnLabel = !cats.length ? "Todas" : cats.length === 1 ? cats[0] : cats.length + " categorias";
-    const PBtn = ({ k, icon, label }) => mtH("button", { onClick: () => setFPanel(fPanel === k ? null : k), className: `min-w-0 flex items-center justify-between gap-1 bg-white border rounded-xl px-3 py-2 text-sm active:bg-stone-100 ${fPanel === k ? "border-amber-500" : "border-stone-300"}` },
+    const PBtn = ({ k, icon, label }) => mtH("button", { onClick: () => setFPanel(fPanel === k ? null : k), className: `min-w-0 flex items-center justify-between gap-1 bg-white border rounded-xl px-3 py-2 text-sm active:bg-stone-100 ${fPanel === k ? "border-blue-900" : "border-stone-300"}` },
         mtH("span", { className: "truncate" }, icon + " ", mtH("b", { className: "font-semibold text-stone-800" }, label)), mtH("span", { className: "text-stone-400 text-xs shrink-0" }, fPanel === k ? "\u25B4" : "\u25BE"));
-    const Opt = ({ on, onClick, children, cls }) => mtH("button", { onClick, className: `py-1.5 rounded-lg text-xs font-semibold ${on ? "bg-amber-500 text-stone-900" : "bg-stone-100 text-stone-600 active:bg-stone-200"} ${cls || ""}` }, children);
+    const Opt = ({ on, onClick, children, cls }) => mtH("button", { onClick, className: `py-1.5 rounded-lg text-xs font-semibold ${on ? "bg-blue-900 text-white" : "bg-stone-100 text-stone-600 active:bg-stone-200"} ${cls || ""}` }, children);
     const pm = calc.perMonth.slice(-7);
     const pmMax = Math.max(1, ...pm.map(([, v]) => v[unit]));
     const prods = Object.entries(calc.byProd).filter(([, v]) => v[unit] > 0).sort((a, b) => b[1][unit] - a[1][unit]);
@@ -2904,16 +2904,16 @@ function CompanySales() {
                     mtH(Opt, { on: allMonths, onClick: () => setSelMonths(calc.months.slice()) }, "Todos")),
                 mtH("div", { className: "text-[10px] font-bold text-stone-400 uppercase tracking-wide" }, "Ou toque nos meses"),
                 mtH("div", { className: "grid grid-cols-4 gap-1.5" }, calc.months.map((m) => mtH(Opt, { key: m, on: selMonths.includes(m), onClick: () => tapMonth(m) }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + " " + m.slice(2, 4)))),
-                mtH("div", { className: "flex justify-end" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-amber-500 text-stone-900 font-bold text-xs rounded-lg px-5 py-1.5" }, "OK"))),
+                mtH("div", { className: "flex justify-end" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-blue-900 text-white font-bold text-xs rounded-lg px-5 py-1.5" }, "OK"))),
             fPanel === "c" && mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-2.5 flex flex-col max-h-[60vh] overflow-y-auto" },
                 mtH("button", { onClick: () => setCats([]), className: "flex items-center gap-2 py-1.5 text-sm text-left" },
-                    mtH("span", { className: `w-4 h-4 rounded flex items-center justify-center text-[10px] border ${!cats.length ? "bg-amber-500 border-amber-500 text-stone-900" : "border-stone-400"}` }, !cats.length ? "\u2713" : ""),
+                    mtH("span", { className: `w-4 h-4 rounded flex items-center justify-center text-[10px] border ${!cats.length ? "bg-blue-900 border-blue-900 text-white" : "border-stone-400"}` }, !cats.length ? "\u2713" : ""),
                     mtH("span", { className: "font-semibold text-stone-800" }, "Todas")),
                 catOpts.map((c) => mtH("button", { key: c, onClick: () => tapCat(c), className: "flex items-center gap-2 py-1.5 text-sm text-left border-t border-stone-100" },
-                    mtH("span", { className: `w-4 h-4 shrink-0 rounded flex items-center justify-center text-[10px] border ${catOn(c) ? "bg-amber-500 border-amber-500 text-stone-900" : "border-stone-400"}` }, catOn(c) ? "\u2713" : ""),
+                    mtH("span", { className: `w-4 h-4 shrink-0 rounded flex items-center justify-center text-[10px] border ${catOn(c) ? "bg-blue-900 border-blue-900 text-white" : "border-stone-400"}` }, catOn(c) ? "\u2713" : ""),
                     mtH("span", { className: "text-stone-800 truncate" }, c),
                     mtH("span", { className: "ml-auto text-xs text-stone-400 shrink-0" }, fmtU((calc.byCatAll[c] || {})[unit] || 0)))),
-                mtH("div", { className: "flex justify-end mt-1.5" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-amber-500 text-stone-900 font-bold text-xs rounded-lg px-5 py-1.5" }, "OK")))),
+                mtH("div", { className: "flex justify-end mt-1.5" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-blue-900 text-white font-bold text-xs rounded-lg px-5 py-1.5" }, "OK")))),
         mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
             mtH(MtMultiSelect, { label: "Canal", values: chanValues, onChange: onChans, allLabel: "Todos", options: calc.channels.map((c) => [c, mtChannelLabel(c)]) }),
             mtH("div", { className: "text-[11px] text-stone-400" }, upd ? "Relatório SAP atualizado em " + new Date(upd).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "")),

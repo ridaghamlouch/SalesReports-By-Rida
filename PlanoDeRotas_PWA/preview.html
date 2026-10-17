@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-17-vendas-8";
+const APP_BUILD = "2026-10-17-vendas-10";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -2672,7 +2672,13 @@ function CompanySales() {
     const [cats, setCats] = useState([]); // category filter (several allowed); empty = all
     const [openCats, setOpenCats] = useState([]); // Por categoria: categories opened (several at once) to show their subcategories
     const [openSubs, setOpenSubs] = useState([]); // ... and subcategories opened to show their item groupings
+    const [prodQ, setProdQ] = useState(""); // search in Produtos mais vendidos
+    const [openT, setOpenT] = useState([]); // rows opened in the other tables (gestor / canal ...): "tabela\u0002chave"
     const [fPanel, setFPanel] = useState(null); // filter panel open under the 2 buttons: "m" (meses) | "c" (categorias) | null
+    // while a panel is open the choice is a draft; it is applied when the panel closes (OK, tap outside, scroll)
+    const [dM, setDM] = useState([]); // draft months
+    const [dC, setDC] = useState([]); // draft categories (explicit list; all ticked = Todas)
+    const draftRef = useRef({});
     const stickRef = useRef(null), monthRowRef = useRef(null);
     const [stickTop, setStickTop] = useState(0);
     const month = selMonths.length ? selMonths[selMonths.length - 1] : "";
@@ -2740,6 +2746,22 @@ function CompanySales() {
             add(byProd, r[1], { name: (it && it.d) || r[1], c: (it && it.c) || "" });
         });
         const cur = tot(rows);
+        // tree tables (months as columns): key = labels joined with \u0001 down the chain -> month -> totals
+        const tree = (fns) => {
+            const o = {};
+            sm.forEach((m) => all[m].forEach((r) => {
+                if (!pass(r)) return;
+                const it = items[r[1]], v = { kz: r[3] || 0, t: val(r, it, "t"), cx: r[2] };
+                let k = "";
+                fns.forEach((fn, i) => { k = i ? k + "\u0001" + fn(r) : String(fn(r)); const x = o[k] || (o[k] = {}), y = x[m] || (x[m] = { kz: 0, t: 0, cx: 0 }); y.kz += v.kz; y.t += v.t; y.cx += v.cx; });
+            }));
+            return o;
+        };
+        const lvlIdx = nextLevel ? MT_LEVELS.findIndex(([k]) => k === nextLevel[0]) : -1;
+        const levelTree = nextLevel ? tree(MT_LEVELS.slice(lvlIdx).map(([k]) => (r) => fieldOf(r[0], k) || "")) : null;
+        const levelKinds = nextLevel ? MT_LEVELS.slice(lvlIdx) : [];
+        const chanTree = path.length === 0 ? tree([(r) => chOf(r[0]) || "OUTROS", (r) => fieldOf(r[0], "sup") || "", (r) => r[0]]) : null;
+        const prodTree = tree([(r) => r[1]]);
         const byCatAll = {};
         rows.forEach((r) => {
             if (!path.every((p) => fieldOf(r[0], p.k) === p.val) || (chSet.size && !chSet.has(chOf(r[0])))) return;
@@ -2754,7 +2776,7 @@ function CompanySales() {
         const channels = [...new Set(Object.values(all).flat().map((r) => chOf(r[0])).filter(Boolean))].sort();
         const levelTitle = nextLevel ? { mgr: "Por gestor", ch: "Por canal", sup: "Por supervisor", seller: "Por vendedor" }[nextLevel[0]] : "";
         const catList = [...new Set(Object.values(items).map((i) => i.c))].sort();
-        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, bySub, byGrp, piv, byCatAll, byProd, byLevel, levelTitle, channels, catList, months };
+        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, bySub, byGrp, piv, byCatAll, levelTree, levelKinds, chanTree, prodTree, byProd, byLevel, levelTitle, channels, catList, months };
     }, [all, items, team, selMonths, path, chans, cats]);
     useEffect(() => {
         const el = stickRef.current; if (!el) return;
@@ -2771,7 +2793,15 @@ function CompanySales() {
         const t = setTimeout(measure, 300);
         return () => { window.removeEventListener("resize", measure); clearTimeout(t); };
     }, [!!calc]);
-    // the open filter panel closes by itself when the page is scrolled or when tapping outside it
+    draftRef.current = { fPanel, dM, dC, catList: calc ? calc.catList : [] };
+    const closePanel = () => {
+        const { fPanel: k, dM: m, dC: c, catList } = draftRef.current;
+        if (k === "m" && m.length) setSelMonths(m.slice().sort());
+        if (k === "c" && c.length) setCats(catList.every((x) => c.includes(x)) ? [] : c.slice().sort());
+        setFPanel(null);
+    };
+    const closeRef = useRef(closePanel); closeRef.current = closePanel;
+    // the open filter panel closes (and applies) by itself when the page is scrolled or when tapping outside it
     useEffect(() => {
         if (!fPanel) return;
         const isDoc = (t) => t === document || t === document.documentElement || t === document.body;
@@ -2784,9 +2814,9 @@ function CompanySales() {
             if (el && t instanceof Node && t !== document && el.contains(t)) return;
             if (t && t.closest && t.closest("[data-hscroll]")) return; // sideways swipe in the table
             if (!start.has(t)) start.set(t, 0);
-            if (Math.abs(pos(t) - start.get(t)) > 40) setFPanel(null);
+            if (Math.abs(pos(t) - start.get(t)) > 40) closeRef.current();
         };
-        const onDown = (e) => { const el = stickRef.current; if (el && !el.contains(e.target)) setFPanel(null); };
+        const onDown = (e) => { const el = stickRef.current; if (el && !el.contains(e.target)) closeRef.current(); };
         document.addEventListener("scroll", onScroll, true);
         document.addEventListener("pointerdown", onDown, true);
         return () => { document.removeEventListener("scroll", onScroll, true); document.removeEventListener("pointerdown", onDown, true); };
@@ -2878,25 +2908,74 @@ function CompanySales() {
                                 multi && mtH("td", { key: "t", className: td + " bg-blue-900 text-white" }, num(ms.reduce((a, m) => a + grand(m), 0))))))),
             ms.length === 1 && mtH("div", { className: "text-[10px] text-stone-400 px-3 py-2" }, "Escolha mais meses no bot\u00e3o \uD83D\uDCC5 (ou Todos) para os ver lado a lado."));
     };
+    // the other boxes, same look as Por categoria: rows (several can be opened in place) x chosen months + Total
+    const TreeTable = ({ id, title, data, head, kinds, pct, limit, rank, label, search }) => {
+        const ms = calc.sm, multi = ms.length > 1, SEP = "\u0001";
+        const cell = (k, m) => ((data[k] || {})[m] || {})[unit] || 0;
+        const rowTot = (k) => ms.reduce((a, m) => a + cell(k, m), 0);
+        const depthOf = (k) => k.split(SEP).length;
+        const kids = (pre) => Object.keys(data).filter((k) => k.startsWith(pre + SEP) && depthOf(k) === depthOf(pre) + 1 && rowTot(k) !== 0).sort((a, b) => rowTot(b) - rowTot(a));
+        const allTops = Object.keys(data).filter((k) => k.indexOf(SEP) < 0 && rowTot(k) !== 0).sort((a, b) => rowTot(b) - rowTot(a));
+        const rankOf = {}; allTops.forEach((k, i) => { rankOf[k] = i; });
+        const norm = (x) => String(x || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const q = search ? norm(prodQ).trim() : "";
+        const tops = q ? allTops.filter((k) => q.split(/\s+/).every((w) => norm((label ? label(k, 0) : k) + " " + k).includes(w))) : allTops;
+        const grand = (m) => allTops.reduce((a, k) => a + cell(k, m), 0), G = ms.reduce((a, m) => a + grand(m), 0);
+        const num = (n) => !n ? "" : unit === "kz" ? (n / 1e6).toLocaleString("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : unit === "t" ? n.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : mtFmt(n);
+        const td = "px-2 py-1.5 text-right whitespace-nowrap";
+        const first = "sticky left-0 z-[1] px-2 py-1.5 text-left max-w-[170px] shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)]";
+        const bg = ["bg-white", "bg-slate-50", "bg-slate-100", "bg-slate-100"], pad = ["", " pl-5", " pl-8", " pl-11"];
+        const body = [];
+        const add = (k, i) => {
+            const d = depthOf(k) - 1, oid = id + "\u0002" + k, ch = d + 1 < (kinds ? kinds.length : 1) ? kids(k) : [], isOpen = openT.includes(oid), cls = bg[Math.min(d, 3)];
+            const name = (label ? label(k.split(SEP)[d], d) : k.split(SEP)[d]) || "(sem nome)";
+            body.push(mtH("tr", { key: k, onClick: ch.length ? () => setOpenT(isOpen ? openT.filter((x) => x !== oid) : [...openT, oid]) : undefined, className: (ch.length ? "cursor-pointer " : "") + (d ? "text-stone-600" : "font-bold text-stone-900") },
+                mtH("td", { className: first + " " + cls + pad[Math.min(d, 3)] + (d ? "" : " border-t border-stone-200") + (rank ? " whitespace-normal leading-tight" : " whitespace-nowrap truncate") },
+                    ch.length ? mtH("span", { className: "text-blue-600" }, isOpen ? "\u25BE " : "\u25B8 ") : null, rank && !d ? mtH("span", { className: "text-stone-400 font-semibold" }, ((rankOf[k] != null ? rankOf[k] : i) + 1) + " \u00b7 ") : null, name),
+                ...ms.map((m) => mtH("td", { key: m, className: td + " " + cls + (d ? "" : " border-t border-stone-200") }, num(cell(k, m)))),
+                multi && mtH("td", { key: "t", className: td + " " + cls + (d ? " font-semibold" : " border-t border-stone-200 text-blue-900") }, num(rowTot(k))),
+                pct && mtH("td", { key: "p", className: td + " " + cls + " text-stone-400 font-normal" + (d ? "" : " border-t border-stone-200") }, G ? Math.round(rowTot(k) / G * 100) + "%" : "")));
+            if (isOpen) ch.forEach((c) => add(c, 0));
+        };
+        tops.slice(0, limit || tops.length).forEach((k, i) => add(k, i));
+        return mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
+            mtH("div", { className: "flex justify-between items-baseline px-3 pt-3 pb-2" },
+                mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, title),
+                mtH("div", { className: "text-[10px] text-stone-400" }, unit === "kz" ? "M Kz" : unit === "t" ? "Toneladas" : "Caixas")),
+            search && mtH("div", { className: "px-3 pb-2 relative" },
+                mtH("input", { type: "search", value: prodQ, onChange: (e) => { setProdQ(e.target.value); }, placeholder: "\uD83D\uDD0D Procurar produto (nome ou c\u00f3digo)", className: "w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-900" }),
+                prodQ && mtH("button", { onClick: () => setProdQ(""), className: "absolute right-5 top-1/2 -translate-y-1/2 text-stone-400 text-lg leading-none px-1" }, "\u00d7")),
+            tops.length === 0 ? mtH("div", { className: "text-sm text-stone-400 px-3 pb-3" }, q ? "Nenhum produto encontrado." : "Sem vendas.") :
+                mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "none", WebkitOverflowScrolling: "touch" } },
+                    mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
+                        mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
+                            mtH("th", { className: first + " bg-blue-900 font-semibold whitespace-nowrap" }, head),
+                            ms.map((m) => mtH("th", { key: m, className: td + " font-semibold" }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + (ms.some((x) => x.slice(0, 4) !== m.slice(0, 4)) ? " " + m.slice(2, 4) : ""))),
+                            multi && mtH("th", { className: td + " font-semibold" }, "Total"),
+                            pct && mtH("th", { className: td + " font-semibold" }, "%"))),
+                        mtH("tbody", null, ...body,
+                            (!limit || q) && mtH("tr", { key: "_tot", className: "font-bold text-white" },
+                                mtH("td", { className: first + " bg-blue-900 whitespace-nowrap" }, q ? "Total (" + tops.length + ")" : "Total"),
+                                ...ms.map((m) => mtH("td", { key: m, className: td + " bg-blue-900" }, num(q ? tops.reduce((a, k) => a + cell(k, m), 0) : grand(m)))),
+                                multi && mtH("td", { key: "t", className: td + " bg-blue-900" }, num(q ? tops.reduce((a, k) => a + rowTot(k), 0) : G)),
+                                pct && mtH("td", { key: "p", className: td + " bg-blue-900" }, "100%"))))),
+            limit && tops.length > limit && mtH("button", { onClick: () => setTopN(topN + 20), className: "w-full text-sm text-blue-900 font-semibold py-2 border-t border-stone-100" }, "Ver mais"));
+    };
     // filters: two buttons (\uD83D\uDCC5 meses / \uD83C\uDFF7\uFE0F categorias), each opens a small panel under them
     const allMonths = calc.months.length > 0 && calc.months.every((m) => selMonths.includes(m));
-    const tapMonth = (m) => {
-        const next = selMonths.includes(m) ? selMonths.filter((x) => x !== m) : [...selMonths, m].sort();
-        setSelMonths(next.length ? next : [m]);
+    const openPanel = (k) => {
+        if (fPanel === k) return closePanel();
+        if (fPanel) closePanel();
+        setDM(selMonths.slice()); setDC(cats.length ? cats.slice() : calc.catList.slice()); setFPanel(k);
     };
-    const lastN = (n) => { setSelMonths(calc.months.slice(-n)); setFPanel(null); };
+    const toggle1 = (list, set, x) => set(list.includes(x) ? list.filter((y) => y !== x) : [...list, x]);
+    const dAllM = calc.months.length > 0 && calc.months.every((m) => dM.includes(m));
+    const dAllC = calc.catList.length > 0 && calc.catList.every((c) => dC.includes(c));
+    const sameM = (arr) => !dAllM && dM.length === arr.length && arr.every((m) => dM.includes(m));
     const catOpts = calc.catList.slice().sort((a, b) => ((calc.byCatAll[b] || {})[unit] || 0) - ((calc.byCatAll[a] || {})[unit] || 0));
-    const catOn = (c) => !cats.length || cats.includes(c);
-    const tapCat = (c) => {
-        const cur = cats.length ? cats : calc.catList;
-        let next = cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c];
-        if (!next.length) return;
-        if (calc.catList.every((x) => next.includes(x))) next = [];
-        setCats(next.sort());
-    };
     const monthBtnLabel = allMonths ? "Todos os meses" : monthsLabel(calc.sm);
     const catBtnLabel = !cats.length ? "Todas" : cats.length === 1 ? cats[0] : cats.length + " categorias";
-    const PBtn = ({ k, icon, label }) => mtH("button", { onClick: () => setFPanel(fPanel === k ? null : k), className: `min-w-0 flex items-center justify-between gap-1 bg-white border rounded-xl px-3 py-2 text-sm active:bg-stone-100 ${fPanel === k ? "border-blue-900" : "border-stone-300"}` },
+    const PBtn = ({ k, icon, label }) => mtH("button", { onClick: () => openPanel(k), className: `min-w-0 flex items-center justify-between gap-1 bg-white border rounded-xl px-3 py-2 text-sm active:bg-stone-100 ${fPanel === k ? "border-blue-900" : "border-stone-300"}` },
         mtH("span", { className: "truncate" }, icon + " ", mtH("b", { className: "font-semibold text-stone-800" }, label)), mtH("span", { className: "text-stone-400 text-xs shrink-0" }, fPanel === k ? "\u25B4" : "\u25BE"));
     const Opt = ({ on, onClick, children, cls }) => mtH("button", { onClick, className: `py-1.5 rounded-lg text-xs font-semibold ${on ? "bg-blue-900 text-white" : "bg-stone-100 text-stone-600 active:bg-stone-200"} ${cls || ""}` }, children);
     const pm = calc.perMonth.slice(-7);
@@ -2918,22 +2997,26 @@ function CompanySales() {
             fPanel === "m" && mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-2.5 flex flex-col gap-2 max-h-[60vh] overflow-y-auto" },
                 mtH("div", { className: "text-[10px] font-bold text-stone-400 uppercase tracking-wide" }, "Atalhos"),
                 mtH("div", { className: "grid grid-cols-4 gap-1.5" },
-                    mtH(Opt, { on: !allMonths && calc.sm.length === 1 && calc.sm[0] === calc.months[calc.months.length - 1], onClick: () => lastN(1) }, "Este m\u00eas"),
-                    mtH(Opt, { on: !allMonths && calc.sm.length === 3 && calc.sm.join() === calc.months.slice(-3).join(), onClick: () => lastN(3) }, "3 meses"),
-                    mtH(Opt, { on: !allMonths && calc.sm.length === 6 && calc.sm.join() === calc.months.slice(-6).join(), onClick: () => lastN(6) }, "6 meses"),
-                    mtH(Opt, { on: allMonths, onClick: () => { setSelMonths(calc.months.slice()); setFPanel(null); } }, "Todos")),
+                    mtH(Opt, { on: sameM(calc.months.slice(-1)), onClick: () => setDM(calc.months.slice(-1)) }, "Este m\u00eas"),
+                    mtH(Opt, { on: sameM(calc.months.slice(-3)), onClick: () => setDM(calc.months.slice(-3)) }, "3 meses"),
+                    mtH(Opt, { on: sameM(calc.months.slice(-6)), onClick: () => setDM(calc.months.slice(-6)) }, "6 meses"),
+                    mtH(Opt, { on: dAllM, onClick: () => setDM(dAllM ? [] : calc.months.slice()) }, "Todos")),
                 mtH("div", { className: "text-[10px] font-bold text-stone-400 uppercase tracking-wide" }, "Ou toque nos meses"),
-                mtH("div", { className: "grid grid-cols-4 gap-1.5" }, calc.months.map((m) => mtH(Opt, { key: m, on: selMonths.includes(m), onClick: () => tapMonth(m) }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + " " + m.slice(2, 4)))),
-                mtH("div", { className: "flex justify-end" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-blue-900 text-white font-bold text-xs rounded-lg px-5 py-1.5" }, "OK"))),
+                mtH("div", { className: "grid grid-cols-4 gap-1.5" }, calc.months.map((m) => mtH(Opt, { key: m, on: dM.includes(m), onClick: () => toggle1(dM, setDM, m) }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + " " + m.slice(2, 4)))),
+                mtH("div", { className: "flex items-center justify-between gap-2" },
+                    mtH("span", { className: "text-[11px] text-stone-400" }, dM.length ? "" : "Escolha pelo menos um m\u00eas"),
+                    mtH("button", { onClick: closePanel, className: "bg-blue-900 text-white font-bold text-xs rounded-lg px-5 py-1.5" }, "OK"))),
             fPanel === "c" && mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-2.5 flex flex-col max-h-[60vh] overflow-y-auto" },
-                mtH("button", { onClick: () => { setCats([]); setFPanel(null); }, className: "flex items-center gap-2 py-1.5 text-sm text-left" },
-                    mtH("span", { className: `w-4 h-4 rounded flex items-center justify-center text-[10px] border ${!cats.length ? "bg-blue-900 border-blue-900 text-white" : "border-stone-400"}` }, !cats.length ? "\u2713" : ""),
+                mtH("button", { onClick: () => setDC(dAllC ? [] : calc.catList.slice()), className: "flex items-center gap-2 py-1.5 text-sm text-left" },
+                    mtH("span", { className: `w-4 h-4 rounded flex items-center justify-center text-[10px] border ${dAllC ? "bg-blue-900 border-blue-900 text-white" : "border-stone-400"}` }, dAllC ? "\u2713" : ""),
                     mtH("span", { className: "font-semibold text-stone-800" }, "Todas")),
-                catOpts.map((c) => mtH("button", { key: c, onClick: () => tapCat(c), className: "flex items-center gap-2 py-1.5 text-sm text-left border-t border-stone-100" },
-                    mtH("span", { className: `w-4 h-4 shrink-0 rounded flex items-center justify-center text-[10px] border ${catOn(c) ? "bg-blue-900 border-blue-900 text-white" : "border-stone-400"}` }, catOn(c) ? "\u2713" : ""),
+                catOpts.map((c) => mtH("button", { key: c, onClick: () => toggle1(dC, setDC, c), className: "flex items-center gap-2 py-1.5 text-sm text-left border-t border-stone-100" },
+                    mtH("span", { className: `w-4 h-4 shrink-0 rounded flex items-center justify-center text-[10px] border ${dC.includes(c) ? "bg-blue-900 border-blue-900 text-white" : "border-stone-400"}` }, dC.includes(c) ? "\u2713" : ""),
                     mtH("span", { className: "text-stone-800 truncate" }, c),
                     mtH("span", { className: "ml-auto text-xs text-stone-400 shrink-0" }, fmtU((calc.byCatAll[c] || {})[unit] || 0)))),
-                mtH("div", { className: "flex justify-end mt-1.5" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-blue-900 text-white font-bold text-xs rounded-lg px-5 py-1.5" }, "OK")))),
+                mtH("div", { className: "flex items-center justify-between gap-2 mt-1.5" },
+                    mtH("span", { className: "text-[11px] text-stone-400" }, dC.length ? "" : "Escolha pelo menos uma categoria"),
+                    mtH("button", { onClick: closePanel, className: "bg-blue-900 text-white font-bold text-xs rounded-lg px-5 py-1.5" }, "OK")))),
         mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
             mtH(MtMultiSelect, { label: "Canal", values: chanValues, onChange: onChans, allLabel: "Todos", options: calc.channels.map((c) => [c, mtChannelLabel(c)]) }),
             mtH("div", { className: "text-[11px] text-stone-400" }, upd ? "Relatório SAP atualizado em " + new Date(upd).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "")),
@@ -2951,29 +3034,33 @@ function CompanySales() {
                 [["Valor", (calc.cur.kz / 1e6).toLocaleString("pt-PT", { maximumFractionDigits: 1 }) + " M Kz"], ["Toneladas", mtFmtT(calc.cur.t)], ["Caixas", mtFmt(calc.cur.cx)]].map(([l, v]) => mtH("div", { key: l, className: "bg-stone-800 rounded-xl p-2" },
                     mtH("div", { className: "text-[9px] text-stone-400 uppercase tracking-wide font-semibold" }, l),
                     mtH("div", { className: "text-[13px] font-bold mt-0.5" }, v))))),
-        mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3" },
-            mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide mb-2" }, "Comparação mensal · " + U[unit][0]),
-            mtH("div", { className: "flex items-end gap-1.5 h-32" }, pm.map(([m, v]) => mtH("button", { key: m, onClick: () => setMonth(m), className: "flex-1 flex flex-col items-center justify-end h-full gap-1" },
-                mtH("div", { className: `w-full rounded-t ${selMonths.includes(m) ? "bg-amber-500" : "bg-blue-900"}`, style: { height: Math.max(2, (Math.max(0, v[unit]) / pmMax) * 100) + "%" } }),
-                mtH("div", { className: `text-[9px] ${selMonths.includes(m) ? "font-bold text-stone-900" : "text-stone-500"}` }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3))))),
-            mtH("div", { className: "text-[10px] text-stone-400 mt-1 text-center" }, "Toque num mês para o ver"),
-            mtH("table", { className: "w-full text-[11px] mt-2" }, mtH("tbody", null, pm.slice().reverse().map(([m, v], i, arr) => mtH("tr", { key: m, className: "border-t border-stone-100" },
-                mtH("td", { className: "py-1 text-stone-700" }, mtMonthLabel(m)),
-                mtH("td", { className: "py-1 text-right font-semibold" }, fmtU(v[unit])),
-                mtH("td", { className: "py-1 text-right w-16" }, m === curM ? mtH("span", { className: "text-stone-400" }, "em curso") : (() => { const c = arr[i + 1] ? chg(v[unit], arr[i + 1][1][unit]) : null; return c == null ? "" : mtH("span", { className: c >= 0 ? "text-emerald-600" : "text-rose-600" }, (c >= 0 ? "+" : "") + c.toLocaleString("pt-PT") + "%"); })())))))),
+        mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
+            mtH("div", { className: "flex justify-between items-baseline px-3 pt-3 pb-2" },
+                mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, "Compara\u00e7\u00e3o mensal"),
+                mtH("div", { className: "text-[10px] text-stone-400" }, U[unit][0])),
+            mtH("div", { className: "flex items-end gap-1.5 h-28 px-3" }, pm.map(([m, v]) => mtH("button", { key: m, onClick: () => setMonth(m), className: "flex-1 flex flex-col items-center justify-end h-full gap-1" },
+                mtH("div", { className: `w-full rounded-t ${selMonths.includes(m) ? "bg-blue-900" : "bg-blue-200"}`, style: { height: Math.max(2, (Math.max(0, v[unit]) / pmMax) * 100) + "%" } }),
+                mtH("div", { className: `text-[9px] ${selMonths.includes(m) ? "font-bold text-blue-900" : "text-stone-500"}` }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3))))),
+            mtH("div", { className: "text-[10px] text-stone-400 mt-1 mb-2 text-center" }, "Toque num m\u00eas para o ver"),
+            mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
+                mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
+                    mtH("th", { className: "px-3 py-1.5 text-left font-semibold" }, "M\u00eas"),
+                    mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, U[unit][0]),
+                    mtH("th", { className: "px-3 py-1.5 text-right font-semibold" }, "vs m\u00eas ant."))),
+                mtH("tbody", null, pm.slice().reverse().map(([m, v], i, arr) => { const on = selMonths.includes(m); return mtH("tr", { key: m, onClick: () => setMonth(m), className: "cursor-pointer " + (on ? "font-bold text-stone-900" : "text-stone-400") },
+                    mtH("td", { className: "px-3 py-1.5 border-t border-stone-200" }, on ? mtH("span", { className: "text-blue-600" }, "\u25CF ") : null, mtMonthLabel(m)),
+                    mtH("td", { className: "px-2 py-1.5 text-right border-t border-stone-200" }, fmtU(v[unit])),
+                    mtH("td", { className: "px-3 py-1.5 text-right border-t border-stone-200" }, m === curM ? mtH("span", { className: "text-stone-400 font-normal" }, "em curso") : (() => { const c = arr[i + 1] ? chg(v[unit], arr[i + 1][1][unit]) : null; return c == null ? "" : mtH("span", { className: c >= 0 ? "text-emerald-600" : "text-rose-600" }, (c >= 0 ? "\u25B2 " : "\u25BC ") + Math.abs(c).toLocaleString("pt-PT") + "%"); })())); }),
+                    mtH("tr", { className: "font-bold text-white" },
+                        mtH("td", { className: "px-3 py-1.5 bg-blue-900" }, calc.sm.length > 1 ? "Total (" + calc.sm.length + " meses)" : "Total"),
+                        mtH("td", { className: "px-2 py-1.5 text-right bg-blue-900" }, fmtU(calc.cur[unit])),
+                        mtH("td", { className: "px-3 py-1.5 bg-blue-900" }, ""))))),
         mtH(CatList, null),
-        nextLevel && mtH(BarList, { title: calc.levelTitle + (nextLevel[0] === "seller" ? "" : " · toque para abrir"), entries: Object.entries(calc.byLevel), label: (k) => (nextLevel[0] === "ch" ? mtChannelLabel(k) : k) || "(sem " + nextLevel[1].toLowerCase() + ")", onPick: nextLevel[0] === "seller" ? (k) => setPath([...path, { k: "seller", val: k }]) : (k) => setPath([...path, { k: nextLevel[0], val: k }]) }),
-        path.length === 0 && mtH(BarList, { title: "Por canal · toque para abrir", entries: Object.entries(calc.byCh), label: (k) => mtChannelLabel(k), onPick: (k) => pickChannel(k === "OUTROS" ? "" : k) }),
-        mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3" },
-            mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide mb-2" }, "Produtos mais vendidos · " + U[unit][0]),
-            prods.slice(0, topN).map(([code, v], i) => mtH("div", { key: code, className: "flex gap-2 py-1.5 border-b border-stone-100 last:border-0" },
-                mtH("div", { className: "w-6 text-xs font-bold text-stone-400 shrink-0" }, i + 1),
-                mtH("div", { className: "min-w-0 flex-1" },
-                    mtH("div", { className: "text-xs font-semibold text-stone-800 leading-snug" }, v.name),
-                    mtH("div", { className: "text-[10px] text-stone-400" }, mtFmt(v.kz) + " Kz · " + mtFmtT(v.t) + " t · " + mtFmt(v.cx) + " cx" + (v.c ? " · " + v.c : ""))),
-                mtH("div", { className: "text-xs font-bold text-blue-900 shrink-0" }, fmtU(v[unit])))),
-            prods.length > topN && mtH("button", { onClick: () => setTopN(topN + 20), className: "w-full text-sm text-blue-900 font-semibold py-2" }, "Ver mais"),
-            prods.length === 0 && mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.")),
+        nextLevel && TreeTable({ id: "lvl", title: calc.levelTitle + (nextLevel[0] === "seller" ? "" : " \u00b7 toque para abrir"), head: nextLevel[1], data: calc.levelTree, kinds: calc.levelKinds, pct: true,
+            label: (v, d) => (calc.levelKinds[d] && calc.levelKinds[d][0] === "ch" ? (v ? mtChannelLabel(v) : "") : v) || "(sem " + ((calc.levelKinds[d] || ["", "nome"])[1]).toLowerCase() + ")" }),
+        path.length === 0 && TreeTable({ id: "ch", title: "Por canal \u00b7 toque para abrir", head: "Canal", data: calc.chanTree, kinds: [1, 2, 3], pct: true,
+            label: (v, d) => d === 0 ? mtChannelLabel(v === "OUTROS" ? "" : v) : (v || (d === 1 ? "(sem supervisor)" : "(sem nome)")) }),
+        TreeTable({ id: "prod", title: "Produtos mais vendidos", head: "Produto", data: calc.prodTree, rank: true, limit: topN, search: true, label: (code) => (items[code] && items[code].d) || code }),
         mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly,
             passSeller: (s) => path.every((p) => fieldOf(s, p.k) === p.val) && (!chans.length || chans.includes(chOf(s))),
             passItem: (code) => !cats.length || cats.includes((items[code] && items[code].c) || "SEM CATEGORIA") }));
@@ -4777,20 +4864,39 @@ function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fk
     const lostAll = list.reduce((a, m) => a + m.lost.length, 0);
     return mtH("div", { id: "mt-mkt-sales", className: "flex flex-col gap-3 scroll-mt-40" },
         note,
-        mtH("div", { className: card },
-            title("Vendas por mercado · toque para abrir"),
-            list.length === 0 ? mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.") : list.slice(0, nMk).map((m) => mtH("button", { key: m.mk, onClick: () => { setSel(m.mk); mtScrollTo("mt-mkt-sales"); }, className: "w-full text-left py-2 border-b border-stone-100 last:border-0" },
-                mtH("div", { className: "flex justify-between gap-2 text-xs" },
-                    mtH("span", { className: "font-semibold text-stone-800 truncate" }, m.mk),
-                    mtH("span", { className: "text-stone-700 shrink-0 font-semibold" }, fmtU(vu(m.v)), mtH("span", { className: "text-stone-400 font-normal" }, total ? "  " + Math.round(vu(m.v) / total * 100) + "%" : ""))),
-                mtH("div", { className: "h-1.5 bg-stone-100 rounded-full overflow-hidden mt-1" }, mtH("div", { className: "h-full bg-blue-900", style: { width: (Math.max(0, vu(m.v)) / max) * 100 + "%" } })),
-                mtH("div", { className: "flex flex-wrap items-center gap-x-2 mt-0.5" },
-                    mtH(Pen, { a: m.buyers, n: m.n }),
-                    m.pv && mtH(Ch, { a: vu(m.v), b: vu(m.pv) }),
-                    m.lost.length > 0 && mtH("span", { className: "text-[10px] text-rose-600" }, m.lost.length + " sem compra"),
-                    focus.length > 0 && mtH("span", { className: "text-[10px] text-amber-700" }, "⭐ " + m.fzAny + "/" + m.n)))),
-            list.length > nMk && mtH("button", { onClick: () => setNMk(nMk + 30), className: "w-full text-sm text-blue-900 font-semibold py-2" }, "Ver mais mercados (" + (list.length - nMk) + ")"),
-            mtH("div", { className: "text-[10px] text-stone-400 mt-1" }, "Clientes = clientes da rota nesse mercado. " + (calc.prev ? (curOnly ? "▲▼ = ritmo do mês vs " : "▲▼ vs ") + prevLabel + ". " + "“Sem compra” = compraram em " + prevLabel + (curOnly ? " e ainda não este mês. " : " e não neste período. ") : "") + (focus.length ? "⭐ = clientes que compraram pelo menos um produto em foco. " : "") + "“SEM MERCADO” = clientes fora das rotas (distribuidores, corporate...).")),
+        mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
+            mtH("div", { className: "flex justify-between items-baseline px-3 pt-3 pb-2" },
+                mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, "Vendas por mercado \u00b7 toque para abrir"),
+                mtH("div", { className: "text-[10px] text-stone-400" }, unit === "kz" ? "Kz" : unit === "t" ? "Toneladas" : "Caixas")),
+            list.length === 0 ? mtH("div", { className: "text-sm text-stone-400 px-3 pb-3" }, "Sem vendas.") :
+                mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "none" } },
+                    mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
+                        mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
+                            mtH("th", { className: "sticky left-0 z-[1] bg-blue-900 px-2 py-1.5 text-left font-semibold" }, "Mercado"),
+                            mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, "Total"),
+                            mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, "%"),
+                            calc.prev && mtH("th", { className: "px-2 py-1.5 text-right font-semibold whitespace-nowrap" }, "vs ant."),
+                            mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, "Clientes"),
+                            lostAll > 0 && mtH("th", { className: "px-2 py-1.5 text-right font-semibold whitespace-nowrap" }, "Sem compra"),
+                            focus.length > 0 && mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, "\u2B50"))),
+                        mtH("tbody", null, list.slice(0, nMk).map((m) => { const c = m.pv ? chgP(vu(m.v), vu(m.pv)) : null; return mtH("tr", { key: m.mk, onClick: () => { setSel(m.mk); mtScrollTo("mt-mkt-sales"); }, className: "cursor-pointer" },
+                            mtH("td", { className: "sticky left-0 z-[1] bg-white px-2 py-1.5 border-t border-stone-200 font-bold text-stone-900 max-w-[150px] truncate shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)]" }, mtH("span", { className: "text-blue-600" }, "\u25B8 "), m.mk),
+                            mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right whitespace-nowrap font-bold text-blue-900" }, fmtU(vu(m.v))),
+                            mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right text-stone-400" }, total ? Math.round(vu(m.v) / total * 100) + "%" : ""),
+                            calc.prev && mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right whitespace-nowrap" }, c == null ? "" : mtH("span", { className: c >= 0 ? "text-emerald-600" : "text-rose-600" }, (c >= 0 ? "\u25B2 " : "\u25BC ") + Math.abs(c).toLocaleString("pt-PT") + "%")),
+                            mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right whitespace-nowrap text-stone-600" }, m.buyers + " de " + m.n),
+                            lostAll > 0 && mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right text-rose-600" }, m.lost.length || ""),
+                            focus.length > 0 && mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right text-amber-700 whitespace-nowrap" }, m.fzAny + "/" + m.n)); }),
+                            mtH("tr", { className: "font-bold text-white" },
+                                mtH("td", { className: "sticky left-0 z-[1] bg-blue-900 px-2 py-1.5" }, "Total"),
+                                mtH("td", { className: "bg-blue-900 px-2 py-1.5 text-right whitespace-nowrap" }, fmtU(total)),
+                                mtH("td", { className: "bg-blue-900 px-2 py-1.5 text-right" }, "100%"),
+                                calc.prev && mtH("td", { className: "bg-blue-900" }, ""),
+                                mtH("td", { className: "bg-blue-900 px-2 py-1.5 text-right whitespace-nowrap" }, list.reduce((a, m) => a + m.buyers, 0) + " de " + list.reduce((a, m) => a + m.n, 0)),
+                                lostAll > 0 && mtH("td", { className: "bg-blue-900 px-2 py-1.5 text-right" }, lostAll),
+                                focus.length > 0 && mtH("td", { className: "bg-blue-900" }, ""))))),
+            list.length > nMk && mtH("button", { onClick: () => setNMk(nMk + 30), className: "w-full text-sm text-blue-900 font-semibold py-2 border-t border-stone-100" }, "Ver mais mercados (" + (list.length - nMk) + ")"),
+            mtH("div", { className: "text-[10px] text-stone-400 px-3 py-2" }, "Clientes = clientes da rota nesse mercado. " + (calc.prev ? (curOnly ? "▲▼ = ritmo do mês vs " : "▲▼ vs ") + prevLabel + ". " + "“Sem compra” = compraram em " + prevLabel + (curOnly ? " e ainda não este mês. " : " e não neste período. ") : "") + (focus.length ? "⭐ = clientes que compraram pelo menos um produto em foco. " : "") + "“SEM MERCADO” = clientes fora das rotas (distribuidores, corporate...).")),
         lostAll > 0 && mtH("div", { className: "text-[11px] text-stone-500 text-center" }, lostAll + " clientes " + (curOnly ? "ainda sem compra este mês" : "sem compra neste período") + " · toque num mercado para ver quem"),
         mtH("button", { onClick: exportX, className: "w-full bg-emerald-600 text-white rounded-lg py-3 font-semibold flex items-center justify-center gap-2 active:bg-emerald-700" }, mtH(Download, { size: 16 }), " Exportar vendas por mercado (Excel)"));
 }

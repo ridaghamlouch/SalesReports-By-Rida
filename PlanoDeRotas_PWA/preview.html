@@ -2669,9 +2669,11 @@ function CompanySales() {
     // drill-down like Metas: Início > Gestor > Canal > Supervisor > Vendedor
     const [path, setPath] = useState([]); // [{ k: "mgr"|"ch"|"sup"|"seller", val }]
     const [chans, setChans] = useState([]); // channel filter (several allowed); empty = all
-    const [cats, setCatsRaw] = useState([]); // category filter (several allowed); empty = all
-    const [subs, setSubs] = useState([]); // subcategory filter: ["CATEGORIA|SUB", ...]; empty = all
-    const setCats = (v) => { setCatsRaw(v); setSubs([]); };
+    const [cats, setCats] = useState([]); // category filter (several allowed); empty = all
+    const [openCat, setOpenCat] = useState(null); // Por categoria: category opened to show its subcategories
+    const [openSub, setOpenSub] = useState(null); // ... and subcategory opened to show its item groupings
+    const stickRef = useRef(null), monthRowRef = useRef(null);
+    const [stickTop, setStickTop] = useState(0);
     const month = selMonths.length ? selMonths[selMonths.length - 1] : "";
     const setMonth = (m) => setSelMonths(m ? [m] : []);
     const [err, setErr] = useState(null);
@@ -2706,14 +2708,14 @@ function CompanySales() {
     };
     const calc = useMemo(() => {
         if (!all || !month) return null;
-        const chSet = new Set(chans), catSet = new Set(cats), subSet = new Set(subs);
-        const pass = (r) => { const it = items[r[1]]; return path.every((p) => fieldOf(r[0], p.k) === p.val) && (!chSet.size || chSet.has(chOf(r[0]))) && (!catSet.size || catSet.has((it && it.c) || "SEM CATEGORIA")) && (!subSet.size || subSet.has(((it && it.c) || "SEM CATEGORIA") + "|" + ((it && it.s) || "SEM SUBCATEGORIA"))); };
+        const chSet = new Set(chans), catSet = new Set(cats);
+        const pass = (r) => { const it = items[r[1]]; return path.every((p) => fieldOf(r[0], p.k) === p.val) && (!chSet.size || chSet.has(chOf(r[0]))) && (!catSet.size || catSet.has((it && it.c) || "SEM CATEGORIA")) ; };
         const tot = (rows) => { const o = { kz: 0, t: 0, cx: 0 }; rows.forEach((r) => { if (!pass(r)) return; const it = items[r[1]]; o.kz += r[3] || 0; o.t += val(r, it, "t"); o.cx += r[2]; }); return o; };
         const months = Object.keys(all).sort();
         const perMonth = months.map((m) => [m, tot(all[m])]);
         const sm = selMonths.filter((m) => all[m]).sort();
         const rows = [].concat(...sm.map((m) => all[m]));
-        const byCh = {}, byCat = {}, bySub = {}, byProd = {}, byLevel = {};
+        const byCh = {}, byCat = {}, bySub = {}, byGrp = {}, byProd = {}, byLevel = {};
         rows.forEach((r) => {
             if (!pass(r)) return;
             const it = items[r[1]];
@@ -2722,7 +2724,9 @@ function CompanySales() {
             add(byCh, chOf(r[0]) || "OUTROS");
             if (nextLevel) add(byLevel, fieldOf(r[0], nextLevel[0]));
             add(byCat, (it && it.c) || "SEM CATEGORIA");
-            add(bySub, ((it && it.c) || "SEM CATEGORIA") + "|" + ((it && it.s) || "SEM SUBCATEGORIA"));
+            const ck = ((it && it.c) || "SEM CATEGORIA") + "|" + ((it && it.s) || "SEM SUBCATEGORIA");
+            add(bySub, ck);
+            add(byGrp, ck + "|" + ((it && (it.g || it.d)) || r[1])); // item grouping (falls back to the product name)
             add(byProd, r[1], { name: (it && it.d) || r[1], c: (it && it.c) || "" });
         });
         const cur = tot(rows);
@@ -2734,8 +2738,25 @@ function CompanySales() {
         const channels = [...new Set(Object.values(all).flat().map((r) => chOf(r[0])).filter(Boolean))].sort();
         const levelTitle = nextLevel ? { mgr: "Por gestor", ch: "Por canal", sup: "Por supervisor", seller: "Por vendedor" }[nextLevel[0]] : "";
         const catList = [...new Set(Object.values(items).map((i) => i.c))].sort();
-        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, bySub, byProd, byLevel, levelTitle, channels, catList, months };
-    }, [all, items, team, selMonths, path, chans, cats, subs]);
+        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, bySub, byGrp, byProd, byLevel, levelTitle, channels, catList, months };
+    }, [all, items, team, selMonths, path, chans, cats]);
+    useEffect(() => {
+        const el = stickRef.current; if (!el) return;
+        const measure = () => {
+            let h = 0;
+            document.querySelectorAll(".sticky, .mt-shell-top").forEach((x) => {
+                if (x === el || x.contains(el) || !(x.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) return;
+                const cs = getComputedStyle(x); if (cs.position !== "sticky" || cs.display === "none" || parseFloat(cs.top) > 1) return;
+                h = Math.max(h, x.offsetHeight);
+            });
+            setStickTop(h);
+        };
+        measure(); window.addEventListener("resize", measure);
+        const t = setTimeout(measure, 300);
+        return () => { window.removeEventListener("resize", measure); clearTimeout(t); };
+    }, [!!calc]);
+    // newest months are on the right: keep them in view
+    useEffect(() => { const r = monthRowRef.current; if (r) r.scrollLeft = r.scrollWidth; }, [!!calc]);
     if (err) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-rose-50 border border-rose-200 text-rose-800 text-sm rounded-lg p-3" }, err));
     if (!calc) return mtH("div", { className: "p-6 text-center text-stone-400 text-sm" }, idx && !month ? "Ainda não há vendas importadas." : "A carregar vendas...");
     const U = { kz: ["Kz", (n) => mtFmt(n) + " Kz"], t: ["Toneladas", (n) => mtFmtT(n) + " t"], cx: ["Caixas", (n) => mtFmt(n) + " cx"] };
@@ -2757,8 +2778,7 @@ function CompanySales() {
         if (vals.length <= 1) return pickChannel(vals[0] || "");
         setPath([]); setChans(vals);
     };
-    const subLabel = subs.length === 0 ? "" : subs.length <= 2 ? subs.map((k) => k.split("|")[1]).join(" + ") : subs.length + " subcategorias";
-    const catLabel = subs.length ? subLabel : cats.length === 0 ? "" : cats.length <= 2 ? cats.join(" + ") : cats.length + " categorias";
+    const catLabel = cats.length === 0 ? "" : cats.length <= 2 ? cats.join(" + ") : cats.length + " categorias";
     const chanLabel = chans.length > 1 ? (chans.length <= 2 ? chans.map(mtChannelLabel).join(" + ") : chans.length + " canais") : "";
     const chg = (a, b) => (b ? Math.round(((a - b) / Math.abs(b)) * 1000) / 10 : null);
     const Chg = ({ a, b }) => { const c = chg(a, b); if (c == null) return null; return mtH("span", { className: `text-[11px] font-semibold ${c >= 0 ? "text-emerald-400" : "text-rose-400"}` }, (c >= 0 ? "▲ " : "▼ ") + Math.abs(c).toLocaleString("pt-PT") + "% vs " + monthsLabel(calc.prevMs, true)); };
@@ -2774,30 +2794,47 @@ function CompanySales() {
                     mtH("span", { className: "text-stone-600 shrink-0" }, fmtU(v[unit]), mtH("span", { className: "text-stone-400" }, total ? "  " + Math.round((v[unit] / total) * 100) + "%" : ""))),
                 mtH("div", { className: "h-1.5 bg-stone-100 rounded-full overflow-hidden mt-1" }, mtH("div", { className: "h-full bg-blue-900", style: { width: (Math.max(0, v[unit]) / max) * 100 + "%" } })))));
     };
-    // categories with their subcategories always listed underneath (subcategory % = share of its category)
+    // Por categoria: tap a category to open its subcategories, tap a subcategory to open its item groupings
+    // (each % is the share of the level above)
     const CatList = () => {
+        const sorted = (o, pre) => Object.entries(o).filter(([k, v]) => k.startsWith(pre) && k.slice(pre.length).indexOf("|") < 0 && v[unit] !== 0).sort((a, b) => b[1][unit] - a[1][unit]);
         const list = Object.entries(calc.byCat).filter(([, v]) => v[unit] !== 0).sort((a, b) => b[1][unit] - a[1][unit]);
         const max = Math.max(1, ...list.map(([, v]) => Math.abs(v[unit])));
         const total = list.reduce((a, [, v]) => a + v[unit], 0);
-        const subsOf = (c) => Object.entries(calc.bySub).filter(([k, v]) => k.split("|")[0] === c && v[unit] !== 0).sort((a, b) => b[1][unit] - a[1][unit]);
+        const pct = (x, of) => (of ? "  " + Math.round((x / of) * 100) + "%" : "");
         return mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3" },
-            mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide mb-2" }, "Por categoria · toque para filtrar"),
-            subs.length > 0 && mtH("button", { onClick: () => setSubs([]), className: "text-[11px] text-blue-900 font-semibold mb-1" }, "× Limpar subcategoria"),
+            mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide mb-2" }, "Por categoria \u00b7 toque para abrir"),
             list.length === 0 ? mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.") : list.map(([c, v]) => {
-                const sl = subsOf(c);
+                const cOpen = openCat === c;
                 return mtH("div", { key: c, className: "py-1" },
-                    mtH("button", { onClick: () => setCats([c]), className: "w-full text-left py-0.5" },
+                    mtH("button", { onClick: () => { setOpenCat(cOpen ? null : c); setOpenSub(null); }, className: "w-full text-left py-0.5" },
                         mtH("div", { className: "flex justify-between gap-2 text-xs" },
-                            mtH("span", { className: "font-semibold text-stone-800 truncate" }, c),
-                            mtH("span", { className: "text-stone-600 shrink-0" }, fmtU(v[unit]), mtH("span", { className: "text-stone-400" }, total ? "  " + Math.round((v[unit] / total) * 100) + "%" : ""))),
+                            mtH("span", { className: "font-semibold text-stone-800 truncate" }, (cOpen ? "\u25BE " : "\u25B8 ") + c),
+                            mtH("span", { className: "text-stone-600 shrink-0" }, fmtU(v[unit]), mtH("span", { className: "text-stone-400" }, pct(v[unit], total)))),
                         mtH("div", { className: "h-1.5 bg-stone-100 rounded-full overflow-hidden mt-1" }, mtH("div", { className: "h-full bg-blue-900", style: { width: (Math.max(0, v[unit]) / max) * 100 + "%" } }))),
-                    sl.map(([k, sv]) => mtH("button", { key: k, onClick: () => { setCatsRaw([c]); setSubs([k]); }, className: "w-full text-left pl-3 py-0.5" },
-                        mtH("div", { className: "flex justify-between gap-2 text-[11px]" },
-                            mtH("span", { className: `truncate ${subs.includes(k) ? "font-bold text-blue-900" : "text-stone-600"}` }, k.split("|")[1]),
-                            mtH("span", { className: "text-stone-500 shrink-0" }, fmtU(sv[unit]), mtH("span", { className: "text-stone-400" }, v[unit] ? "  " + Math.round((sv[unit] / v[unit]) * 100) + "%" : ""))),
-                        mtH("div", { className: "h-1 bg-stone-100 rounded-full overflow-hidden mt-0.5" }, mtH("div", { className: "h-full bg-blue-300", style: { width: (v[unit] ? Math.max(0, sv[unit]) / v[unit] : 0) * 100 + "%" } })))));
+                    cOpen && sorted(calc.bySub, c + "|").map(([sk, sv]) => {
+                        const sOpen = openSub === sk;
+                        return mtH("div", { key: sk, className: "pl-3" },
+                            mtH("button", { onClick: () => setOpenSub(sOpen ? null : sk), className: "w-full text-left py-1" },
+                                mtH("div", { className: "flex justify-between gap-2 text-[11px]" },
+                                    mtH("span", { className: "font-semibold text-stone-700 truncate" }, (sOpen ? "\u25BE " : "\u25B8 ") + sk.split("|")[1]),
+                                    mtH("span", { className: "text-stone-500 shrink-0" }, fmtU(sv[unit]), mtH("span", { className: "text-stone-400" }, pct(sv[unit], v[unit])))),
+                                mtH("div", { className: "h-1 bg-stone-100 rounded-full overflow-hidden mt-0.5" }, mtH("div", { className: "h-full bg-blue-300", style: { width: (v[unit] ? Math.max(0, sv[unit]) / v[unit] : 0) * 100 + "%" } }))),
+                            sOpen && mtH("div", { className: "bg-stone-50 rounded-lg px-2 py-1 mb-1" }, sorted(calc.byGrp, sk + "|").map(([gk, gv]) => mtH("div", { key: gk, className: "flex justify-between gap-2 text-[11px] py-0.5 border-b border-stone-100 last:border-0" },
+                                mtH("span", { className: "text-stone-600 leading-tight" }, gk.split("|")[2]),
+                                mtH("span", { className: "text-stone-500 shrink-0" }, fmtU(gv[unit]), mtH("span", { className: "text-stone-400" }, pct(gv[unit], sv[unit])))))));
+                    }));
             }));
     };
+    // month / category chips (several allowed); "Todos" / "Todas" picks everything in one tap
+    const allMonths = calc.months.length > 0 && calc.months.every((m) => selMonths.includes(m));
+    const tapMonth = (m) => {
+        if (allMonths) return setSelMonths([m]);
+        const next = selMonths.includes(m) ? selMonths.filter((x) => x !== m) : [...selMonths, m].sort();
+        setSelMonths(next.length ? next : [m]);
+    };
+    const tapCat = (c) => setCats(cats.includes(c) ? cats.filter((x) => x !== c) : [...cats, c].sort());
+    const Chip = ({ on, onClick, children }) => mtH("button", { onClick, className: `shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border ${on ? "bg-blue-900 text-white border-blue-900" : "bg-white text-stone-600 border-stone-300 active:bg-stone-100"}` }, children);
     const pm = calc.perMonth.slice(-7);
     const pmMax = Math.max(1, ...pm.map(([, v]) => v[unit]));
     const prods = Object.entries(calc.byProd).filter(([, v]) => v[unit] > 0).sort((a, b) => b[1][unit] - a[1][unit]);
@@ -2810,11 +2847,15 @@ function CompanySales() {
     return mtH("div", { className: "p-4 flex flex-col gap-3" },
         mtH("div", { className: "flex bg-white border border-stone-200 rounded-xl p-1 gap-1" },
             [["kz", "Valor (Kz)"], ["t", "Toneladas"], ["cx", "Caixas"]].map(([k, l]) => mtH("button", { key: k, onClick: () => setUnit(k), className: `flex-1 py-2 rounded-lg text-sm font-semibold ${unit === k ? "bg-blue-900 text-white" : "text-stone-600"}` }, l))),
+        mtH("div", { ref: stickRef, className: "sticky z-10 -mx-4 px-4 py-2 bg-stone-50/95 backdrop-blur border-b border-stone-200 flex flex-col gap-1.5", style: { top: stickTop } },
+            mtH("div", { ref: monthRowRef, className: "flex gap-1.5 overflow-x-auto pb-0.5", style: { scrollbarWidth: "none" } },
+                calc.months.map((m) => mtH(Chip, { key: m, on: !allMonths && selMonths.includes(m), onClick: () => tapMonth(m) }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + " " + m.slice(2, 4))),
+                mtH(Chip, { on: allMonths, onClick: () => setSelMonths(calc.months.slice()) }, "Todos")),
+            mtH("div", { className: "flex gap-1.5 overflow-x-auto pb-0.5", style: { scrollbarWidth: "none" } },
+                mtH(Chip, { on: cats.length === 0, onClick: () => setCats([]) }, "Todas"),
+                calc.catList.map((c) => mtH(Chip, { key: c, on: cats.includes(c), onClick: () => tapCat(c) }, c)))),
         mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
-            mtH("div", { className: "flex gap-2" },
-                mtH(MtMultiSelect, { label: "Mês", values: selMonths, onChange: setSelMonths, required: true, options: calc.months.map((m) => [m, mtMonthLabel(m)]) }),
-                mtH(MtMultiSelect, { label: "Canal", values: chanValues, onChange: onChans, allLabel: "Todos", options: calc.channels.map((c) => [c, mtChannelLabel(c)]) })),
-            mtH(MtMultiSelect, { label: "Categoria", values: cats, onChange: setCats, allLabel: "Todas", options: calc.catList.map((c) => [c, c]) }),
+            mtH(MtMultiSelect, { label: "Canal", values: chanValues, onChange: onChans, allLabel: "Todos", options: calc.channels.map((c) => [c, mtChannelLabel(c)]) }),
             mtH("div", { className: "text-[11px] text-stone-400" }, upd ? "Relatório SAP atualizado em " + new Date(upd).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "")),
         path.length > 0 && mtH("div", { className: "flex flex-wrap items-center gap-1 text-xs" },
             mtH("button", { onClick: () => setPath([]), className: "px-2 py-1 rounded bg-white border border-stone-200 text-blue-900 font-semibold" }, "Início"),
@@ -2853,9 +2894,9 @@ function CompanySales() {
                 mtH("div", { className: "text-xs font-bold text-blue-900 shrink-0" }, fmtU(v[unit])))),
             prods.length > topN && mtH("button", { onClick: () => setTopN(topN + 20), className: "w-full text-sm text-blue-900 font-semibold py-2" }, "Ver mais"),
             prods.length === 0 && mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.")),
-        mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats, subs]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly,
+        mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly,
             passSeller: (s) => path.every((p) => fieldOf(s, p.k) === p.val) && (!chans.length || chans.includes(chOf(s))),
-            passItem: (code) => { const it = items[code], c = (it && it.c) || "SEM CATEGORIA"; return (!cats.length || cats.includes(c)) && (!subs.length || subs.includes(c + "|" + ((it && it.s) || "SEM SUBCATEGORIA"))); } }));
+            passItem: (code) => !cats.length || cats.includes((items[code] && items[code].c) || "SEM CATEGORIA") }));
 }
 // ---- the header + view used for metas-only people (and managers / owner) ----
 // tabs as emoji tiles inside a black greeting card (same look as Admin / Direção)
@@ -6826,8 +6867,13 @@ function RouteApp() {
                 React.createElement("button", { onClick: () => setScreen("mgr-pick"), className: "w-full bg-white border-2 border-amber-500 text-amber-700 rounded-lg py-3.5 flex flex-row items-center justify-center gap-3 active:bg-amber-50" },
                     React.createElement(BarChart2, { size: 22 }),
                     React.createElement("span", { className: "font-semibold" }, "Sou Gestor de Canal"))),
-                React.createElement("button", { onClick: () => { setAdminField(""); setAdminNewConfirmField(""); setAdminError(""); setAdminMsg(null); setAdminAuthed(false); setScreen("admin-gate"); }, className: "w-full text-stone-400 text-xs py-1" }, "Administra\u00E7\u00E3o"),
-                React.createElement("button", { onClick: () => { setOwnerField(""); setOwnerNewConfirmField(""); setOwnerError(""); setOwnerAuthed(false); setScreen("owner-gate"); }, className: "w-full text-stone-400 text-xs py-1" }, "Dire\u00E7\u00E3o"),
+                React.createElement("div", { className: "grid grid-cols-2 gap-2 mt-1" },
+                    React.createElement("button", { onClick: () => { setAdminField(""); setAdminNewConfirmField(""); setAdminError(""); setAdminMsg(null); setAdminAuthed(false); setScreen("admin-gate"); }, className: "bg-white border-2 border-stone-700 text-stone-800 rounded-lg py-2.5 flex flex-col items-center gap-1 active:bg-stone-100" },
+                        React.createElement("span", { className: "text-lg leading-none" }, "\uD83D\uDEE0\uFE0F"),
+                        React.createElement("span", { className: "text-sm font-semibold" }, "Administra\u00E7\u00E3o")),
+                    React.createElement("button", { onClick: () => { setOwnerField(""); setOwnerNewConfirmField(""); setOwnerError(""); setOwnerAuthed(false); setScreen("owner-gate"); }, className: "bg-white border-2 border-amber-500 text-amber-700 rounded-lg py-2.5 flex flex-col items-center gap-1 active:bg-amber-50" },
+                        React.createElement("span", { className: "text-lg leading-none" }, "\uD83D\uDCCA"),
+                        React.createElement("span", { className: "text-sm font-semibold" }, "Dire\u00E7\u00E3o"))),
                 React.createElement("p", { className: "text-center text-[10px] text-stone-400" }, "Este \u00E9 um sistema partilhado \u2014 os dados sincronizam automaticamente entre todos os telem\u00F3veis da equipa."))));
     }
     if (screen === "admin-import") {

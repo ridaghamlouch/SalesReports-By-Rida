@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-17-vendas-7";
+const APP_BUILD = "2026-10-17-vendas-8";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -2865,7 +2865,7 @@ function CompanySales() {
                 mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, "Por categoria \u00b7 toque para abrir"),
                 mtH("div", { className: "text-[10px] text-stone-400" }, unit === "kz" ? "M Kz" : unit === "t" ? "Toneladas" : "Caixas")),
             cats.length === 0 ? mtH("div", { className: "text-sm text-stone-400 px-3 pb-3" }, "Sem vendas.") :
-                mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "contain", WebkitOverflowScrolling: "touch" } },
+                mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "none", WebkitOverflowScrolling: "touch" } },
                     mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
                         mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
                             mtH("th", { className: first + " bg-blue-900 font-semibold" }, "Categoria"),
@@ -6908,7 +6908,7 @@ function RouteApp() {
         const title = kind === "dir" ? "Dire\u00E7\u00E3o" : "Administra\u00E7\u00E3o";
         const home = kind === "dir" ? "owner-panel" : "admin-panel";
         return React.createElement("div", { className: "mt-shell min-h-full bg-stone-50" + (screen === "admin-visit-detail" ? " mt-shell-keep" : "") },
-            React.createElement("style", null, ".mt-shell:not(.mt-shell-keep) > :not(.mt-shell-top) [data-shellhide]{display:none!important}"),
+            React.createElement("style", null, ".mt-shell:not(.mt-shell-keep) > :not(.mt-shell-top) [data-shellhide]{display:none!important} .mt-shell .mt-report-tabs{position:static!important;box-shadow:none!important}"),
             React.createElement("div", { className: "mt-shell-top sticky top-0 z-30" }, React.createElement(BackHeader, { title, subtitle: kind === "dir" ? "Relat\u00F3rios da empresa" : "Repor PINs e gerir acessos", onBack: () => setScreen(home) })),
             React.createElement("div", { className: "px-3 pt-3" },
                 React.createElement("div", { className: "bg-stone-900 rounded-2xl p-3 shadow-md text-white" },
@@ -7927,7 +7927,7 @@ function RouteApp() {
                         " Baixar PDF")))))))));
         };
         return (React.createElement("div", { className: "min-h-full bg-stone-50 pb-8" },
-            React.createElement("div", { className: "sticky top-0 z-20 bg-white shadow-sm" },
+            React.createElement("div", { className: "mt-report-tabs sticky top-0 z-20 bg-white shadow-sm" },
                 React.createElement("div", { "data-shellhide": "1", className: "bg-blue-900 text-white px-3 pb-2 flex items-center gap-2", style: { paddingTop: "max(env(safe-area-inset-top), 0.5rem)" } },
                     React.createElement("button", { onClick: () => setScreen(ownerAuthed ? "owner-panel" : "admin-panel"), className: "p-1 -ml-1" },
                         React.createElement(ChevronLeft, { size: 22 })),

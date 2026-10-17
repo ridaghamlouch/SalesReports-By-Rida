@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-17-vendas-5";
+const APP_BUILD = "2026-10-17-vendas-6";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -2840,13 +2840,13 @@ function CompanySales() {
             });
         });
         const grand = (m) => cats.reduce((a, c) => a + cell(c, m), 0);
-        return mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3" },
-            mtH("div", { className: "flex justify-between items-baseline mb-2" },
+        return mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
+            mtH("div", { className: "flex justify-between items-baseline px-3 pt-3 pb-2" },
                 mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, "Por categoria \u00b7 toque para abrir"),
                 mtH("div", { className: "text-[10px] text-stone-400" }, unit === "kz" ? "M Kz" : unit === "t" ? "Toneladas" : "Caixas")),
-            cats.length === 0 ? mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.") :
-                mtH("div", { className: "overflow-x-auto rounded-lg border border-stone-200" },
-                    mtH("table", { className: "text-[11px] border-separate", style: { borderSpacing: 0 } },
+            cats.length === 0 ? mtH("div", { className: "text-sm text-stone-400 px-3 pb-3" }, "Sem vendas.") :
+                mtH("div", { className: "overflow-x-auto" },
+                    mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
                         mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
                             mtH("th", { className: first + " bg-blue-900 font-semibold" }, "Categoria"),
                             ms.map((m) => mtH("th", { key: m, className: td + " font-semibold" }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + (calc.sm.some((x) => x.slice(0, 4) !== m.slice(0, 4)) ? " " + m.slice(2, 4) : ""))),
@@ -2856,7 +2856,7 @@ function CompanySales() {
                                 mtH("td", { className: first + " bg-blue-900" }, "Total"),
                                 ...ms.map((m) => mtH("td", { key: m, className: td + " bg-blue-900" }, num(grand(m)))),
                                 multi && mtH("td", { key: "t", className: td + " bg-blue-900 text-white" }, num(ms.reduce((a, m) => a + grand(m), 0))))))),
-            ms.length === 1 && mtH("div", { className: "text-[10px] text-stone-400 mt-1.5" }, "Escolha mais meses no bot\u00e3o \uD83D\uDCC5 (ou Todos) para os ver lado a lado."));
+            ms.length === 1 && mtH("div", { className: "text-[10px] text-stone-400 px-3 py-2" }, "Escolha mais meses no bot\u00e3o \uD83D\uDCC5 (ou Todos) para os ver lado a lado."));
     };
     // filters: two buttons (\uD83D\uDCC5 meses / \uD83C\uDFF7\uFE0F categorias), each opens a small panel under them
     const allMonths = calc.months.length > 0 && calc.months.every((m) => selMonths.includes(m));

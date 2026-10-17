@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-17-vendas-3";
+const APP_BUILD = "2026-10-17-vendas-4";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -2672,6 +2672,7 @@ function CompanySales() {
     const [cats, setCats] = useState([]); // category filter (several allowed); empty = all
     const [openCats, setOpenCats] = useState([]); // Por categoria: categories opened (several at once) to show their subcategories
     const [openSubs, setOpenSubs] = useState([]); // ... and subcategories opened to show their item groupings
+    const [fPanel, setFPanel] = useState(null); // filter panel open under the 2 buttons: "m" (meses) | "c" (categorias) | null
     const stickRef = useRef(null), monthRowRef = useRef(null);
     const [stickTop, setStickTop] = useState(0);
     const month = selMonths.length ? selMonths[selMonths.length - 1] : "";
@@ -2739,6 +2740,12 @@ function CompanySales() {
             add(byProd, r[1], { name: (it && it.d) || r[1], c: (it && it.c) || "" });
         });
         const cur = tot(rows);
+        const byCatAll = {};
+        rows.forEach((r) => {
+            if (!path.every((p) => fieldOf(r[0], p.k) === p.val) || (chSet.size && !chSet.has(chOf(r[0])))) return;
+            const it = items[r[1]], k = (it && it.c) || "SEM CATEGORIA", x = byCatAll[k] || (byCatAll[k] = { kz: 0, t: 0, cx: 0 });
+            x.kz += r[3] || 0; x.t += val(r, it, "t"); x.cx += r[2];
+        });
         // comparison: the same number of months just before (only when the chosen months are consecutive)
         const ix = sm.map((m) => months.indexOf(m));
         const consecutive = ix.length > 0 && ix.every((v, k) => k === 0 || v === ix[k - 1] + 1);
@@ -2747,7 +2754,7 @@ function CompanySales() {
         const channels = [...new Set(Object.values(all).flat().map((r) => chOf(r[0])).filter(Boolean))].sort();
         const levelTitle = nextLevel ? { mgr: "Por gestor", ch: "Por canal", sup: "Por supervisor", seller: "Por vendedor" }[nextLevel[0]] : "";
         const catList = [...new Set(Object.values(items).map((i) => i.c))].sort();
-        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, bySub, byGrp, piv, byProd, byLevel, levelTitle, channels, catList, months };
+        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, bySub, byGrp, piv, byCatAll, byProd, byLevel, levelTitle, channels, catList, months };
     }, [all, items, team, selMonths, path, chans, cats]);
     useEffect(() => {
         const el = stickRef.current; if (!el) return;
@@ -2815,19 +2822,21 @@ function CompanySales() {
         const toggle = (list, set, k) => set(list.includes(k) ? list.filter((x) => x !== k) : [...list, k]);
         const td = "px-2 py-1.5 text-right whitespace-nowrap";
         const first = "sticky left-0 z-[1] px-2 py-1.5 text-left whitespace-nowrap max-w-[150px] truncate";
-        const cells = (k, cls) => [...ms.map((m) => mtH("td", { key: m, className: td + " " + cls }, num(cell(k, m)))), multi && mtH("td", { key: "t", className: td + " font-bold " + cls }, num(rowTot(k)))];
+        const cells = (k, cls) => [...ms.map((m) => mtH("td", { key: m, className: td + " " + cls }, num(cell(k, m)))), multi && mtH("td", { key: "t", className: td + " font-semibold " + cls }, num(rowTot(k)))];
         const body = [];
         cats.forEach((c) => {
             const cOpen = openCats.includes(c);
-            body.push(mtH("tr", { key: c, onClick: () => toggle(openCats, setOpenCats, c), className: "cursor-pointer font-bold text-stone-900 border-t border-stone-200" },
-                mtH("td", { className: first + " bg-amber-100" }, (cOpen ? "\u25BE " : "\u25B8 ") + c), ...cells(c, "bg-amber-100")));
+            body.push(mtH("tr", { key: c, onClick: () => toggle(openCats, setOpenCats, c), className: "cursor-pointer font-bold text-stone-900" },
+                mtH("td", { className: first + " bg-white border-t border-stone-200" }, mtH("span", { className: "text-amber-600" }, cOpen ? "\u25BE " : "\u25B8 "), c),
+                ...ms.map((m) => mtH("td", { key: m, className: td + " bg-white border-t border-stone-200" }, num(cell(c, m)))),
+                multi && mtH("td", { key: "t", className: td + " bg-white border-t border-stone-200 text-amber-700" }, num(rowTot(c)))));
             if (!cOpen) return;
             kids(c + "|", 2).forEach((sk) => {
                 const sOpen = openSubs.includes(sk), gl = kids(sk + "|", 3);
-                body.push(mtH("tr", { key: sk, onClick: () => toggle(openSubs, setOpenSubs, sk), className: "cursor-pointer text-stone-700 border-t border-stone-100" },
-                    mtH("td", { className: first + " bg-white pl-4" }, (sOpen ? "\u25BE " : "\u25B8 ") + sk.split("|")[1]), ...cells(sk, "bg-white")));
+                body.push(mtH("tr", { key: sk, onClick: () => toggle(openSubs, setOpenSubs, sk), className: "cursor-pointer text-stone-600" },
+                    mtH("td", { className: first + " bg-stone-50 pl-5" }, mtH("span", { className: "text-amber-600" }, sOpen ? "\u25BE " : "\u25B8 "), sk.split("|")[1]), ...cells(sk, "bg-stone-50")));
                 if (sOpen) gl.forEach((gk) => body.push(mtH("tr", { key: gk, className: "text-stone-500 text-[10.5px]" },
-                    mtH("td", { className: first + " bg-stone-50 pl-7" }, gk.split("|")[2]), ...cells(gk, "bg-stone-50"))));
+                    mtH("td", { className: first + " bg-stone-100 pl-8" }, gk.split("|")[2]), ...cells(gk, "bg-stone-100"))));
             });
         });
         const grand = (m) => cats.reduce((a, c) => a + cell(c, m), 0);
@@ -2836,28 +2845,40 @@ function CompanySales() {
                 mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, "Por categoria \u00b7 toque para abrir"),
                 mtH("div", { className: "text-[10px] text-stone-400" }, unit === "kz" ? "M Kz" : unit === "t" ? "Toneladas" : "Caixas")),
             cats.length === 0 ? mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.") :
-                mtH("div", { className: "overflow-x-auto -mx-1" },
+                mtH("div", { className: "overflow-x-auto rounded-lg border border-stone-200" },
                     mtH("table", { className: "text-[11px] border-separate", style: { borderSpacing: 0 } },
-                        mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
-                            mtH("th", { className: first + " bg-blue-900 font-semibold rounded-tl-lg" }, "Categoria"),
+                        mtH("thead", null, mtH("tr", { className: "bg-stone-900 text-stone-400" },
+                            mtH("th", { className: first + " bg-stone-900 font-semibold" }, "Categoria"),
                             ms.map((m) => mtH("th", { key: m, className: td + " font-semibold" }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + (calc.sm.some((x) => x.slice(0, 4) !== m.slice(0, 4)) ? " " + m.slice(2, 4) : ""))),
-                            multi && mtH("th", { className: td + " font-semibold rounded-tr-lg" }, "Total"))),
+                            multi && mtH("th", { className: td + " font-semibold" }, "Total"))),
                         mtH("tbody", null, ...body,
                             mtH("tr", { key: "_tot", className: "font-bold text-white" },
                                 mtH("td", { className: first + " bg-stone-900" }, "Total"),
                                 ...ms.map((m) => mtH("td", { key: m, className: td + " bg-stone-900" }, num(grand(m)))),
                                 multi && mtH("td", { key: "t", className: td + " bg-stone-900 text-amber-400" }, num(ms.reduce((a, m) => a + grand(m), 0))))))),
-            ms.length === 1 && mtH("div", { className: "text-[10px] text-stone-400 mt-1.5" }, "Escolha mais meses no topo (ou Todos) para os ver lado a lado."));
+            ms.length === 1 && mtH("div", { className: "text-[10px] text-stone-400 mt-1.5" }, "Escolha mais meses no bot\u00e3o \uD83D\uDCC5 (ou Todos) para os ver lado a lado."));
     };
-    // month / category chips (several allowed); "Todos" / "Todas" picks everything in one tap
+    // filters: two buttons (\uD83D\uDCC5 meses / \uD83C\uDFF7\uFE0F categorias), each opens a small panel under them
     const allMonths = calc.months.length > 0 && calc.months.every((m) => selMonths.includes(m));
     const tapMonth = (m) => {
-        if (allMonths) return setSelMonths([m]);
         const next = selMonths.includes(m) ? selMonths.filter((x) => x !== m) : [...selMonths, m].sort();
         setSelMonths(next.length ? next : [m]);
     };
-    const tapCat = (c) => setCats(cats.includes(c) ? cats.filter((x) => x !== c) : [...cats, c].sort());
-    const Chip = ({ on, onClick, children }) => mtH("button", { onClick, className: `shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border ${on ? "bg-blue-900 text-white border-blue-900" : "bg-white text-stone-600 border-stone-300 active:bg-stone-100"}` }, children);
+    const lastN = (n) => setSelMonths(calc.months.slice(-n));
+    const catOpts = calc.catList.slice().sort((a, b) => ((calc.byCatAll[b] || {})[unit] || 0) - ((calc.byCatAll[a] || {})[unit] || 0));
+    const catOn = (c) => !cats.length || cats.includes(c);
+    const tapCat = (c) => {
+        const cur = cats.length ? cats : calc.catList;
+        let next = cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c];
+        if (!next.length) return;
+        if (calc.catList.every((x) => next.includes(x))) next = [];
+        setCats(next.sort());
+    };
+    const monthBtnLabel = allMonths ? "Todos os meses" : monthsLabel(calc.sm);
+    const catBtnLabel = !cats.length ? "Todas" : cats.length === 1 ? cats[0] : cats.length + " categorias";
+    const PBtn = ({ k, icon, label }) => mtH("button", { onClick: () => setFPanel(fPanel === k ? null : k), className: `min-w-0 flex items-center justify-between gap-1 bg-white border rounded-xl px-3 py-2 text-sm active:bg-stone-100 ${fPanel === k ? "border-amber-500" : "border-stone-300"}` },
+        mtH("span", { className: "truncate" }, icon + " ", mtH("b", { className: "font-semibold text-stone-800" }, label)), mtH("span", { className: "text-stone-400 text-xs shrink-0" }, fPanel === k ? "\u25B4" : "\u25BE"));
+    const Opt = ({ on, onClick, children, cls }) => mtH("button", { onClick, className: `py-1.5 rounded-lg text-xs font-semibold ${on ? "bg-amber-500 text-stone-900" : "bg-stone-100 text-stone-600 active:bg-stone-200"} ${cls || ""}` }, children);
     const pm = calc.perMonth.slice(-7);
     const pmMax = Math.max(1, ...pm.map(([, v]) => v[unit]));
     const prods = Object.entries(calc.byProd).filter(([, v]) => v[unit] > 0).sort((a, b) => b[1][unit] - a[1][unit]);
@@ -2870,13 +2891,29 @@ function CompanySales() {
     return mtH("div", { className: "p-4 flex flex-col gap-3" },
         mtH("div", { className: "flex bg-white border border-stone-200 rounded-xl p-1 gap-1" },
             [["kz", "Valor (Kz)"], ["t", "Toneladas"], ["cx", "Caixas"]].map(([k, l]) => mtH("button", { key: k, onClick: () => setUnit(k), className: `flex-1 py-2 rounded-lg text-sm font-semibold ${unit === k ? "bg-blue-900 text-white" : "text-stone-600"}` }, l))),
-        mtH("div", { ref: stickRef, className: "sticky z-10 -mx-4 px-4 py-2 bg-stone-50/95 backdrop-blur border-b border-stone-200 flex flex-col gap-1.5", style: { top: stickTop } },
-            mtH("div", { ref: monthRowRef, className: "flex gap-1.5 overflow-x-auto pb-0.5", style: { scrollbarWidth: "none" } },
-                calc.months.map((m) => mtH(Chip, { key: m, on: !allMonths && selMonths.includes(m), onClick: () => tapMonth(m) }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + " " + m.slice(2, 4))),
-                mtH(Chip, { on: allMonths, onClick: () => setSelMonths(calc.months.slice()) }, "Todos")),
-            mtH("div", { className: "flex gap-1.5 overflow-x-auto pb-0.5", style: { scrollbarWidth: "none" } },
-                mtH(Chip, { on: cats.length === 0, onClick: () => setCats([]) }, "Todas"),
-                calc.catList.map((c) => mtH(Chip, { key: c, on: cats.includes(c), onClick: () => tapCat(c) }, c)))),
+        mtH("div", { ref: stickRef, className: "sticky z-10 -mx-4 px-4 py-2 bg-stone-50/95 backdrop-blur border-b border-stone-200 flex flex-col gap-2", style: { top: stickTop } },
+            mtH("div", { className: "grid grid-cols-2 gap-2" },
+                mtH(PBtn, { k: "m", icon: "\uD83D\uDCC5", label: monthBtnLabel }),
+                mtH(PBtn, { k: "c", icon: "\uD83C\uDFF7\uFE0F", label: catBtnLabel })),
+            fPanel === "m" && mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-2.5 flex flex-col gap-2 max-h-[60vh] overflow-y-auto" },
+                mtH("div", { className: "text-[10px] font-bold text-stone-400 uppercase tracking-wide" }, "Atalhos"),
+                mtH("div", { className: "grid grid-cols-4 gap-1.5" },
+                    mtH(Opt, { on: !allMonths && calc.sm.length === 1 && calc.sm[0] === calc.months[calc.months.length - 1], onClick: () => lastN(1) }, "Este m\u00eas"),
+                    mtH(Opt, { on: !allMonths && calc.sm.length === 3 && calc.sm.join() === calc.months.slice(-3).join(), onClick: () => lastN(3) }, "3 meses"),
+                    mtH(Opt, { on: !allMonths && calc.sm.length === 6 && calc.sm.join() === calc.months.slice(-6).join(), onClick: () => lastN(6) }, "6 meses"),
+                    mtH(Opt, { on: allMonths, onClick: () => setSelMonths(calc.months.slice()) }, "Todos")),
+                mtH("div", { className: "text-[10px] font-bold text-stone-400 uppercase tracking-wide" }, "Ou toque nos meses"),
+                mtH("div", { className: "grid grid-cols-4 gap-1.5" }, calc.months.map((m) => mtH(Opt, { key: m, on: selMonths.includes(m), onClick: () => tapMonth(m) }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + " " + m.slice(2, 4)))),
+                mtH("div", { className: "flex justify-end" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-amber-500 text-stone-900 font-bold text-xs rounded-lg px-5 py-1.5" }, "OK"))),
+            fPanel === "c" && mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-2.5 flex flex-col max-h-[60vh] overflow-y-auto" },
+                mtH("button", { onClick: () => setCats([]), className: "flex items-center gap-2 py-1.5 text-sm text-left" },
+                    mtH("span", { className: `w-4 h-4 rounded flex items-center justify-center text-[10px] border ${!cats.length ? "bg-amber-500 border-amber-500 text-stone-900" : "border-stone-400"}` }, !cats.length ? "\u2713" : ""),
+                    mtH("span", { className: "font-semibold text-stone-800" }, "Todas")),
+                catOpts.map((c) => mtH("button", { key: c, onClick: () => tapCat(c), className: "flex items-center gap-2 py-1.5 text-sm text-left border-t border-stone-100" },
+                    mtH("span", { className: `w-4 h-4 shrink-0 rounded flex items-center justify-center text-[10px] border ${catOn(c) ? "bg-amber-500 border-amber-500 text-stone-900" : "border-stone-400"}` }, catOn(c) ? "\u2713" : ""),
+                    mtH("span", { className: "text-stone-800 truncate" }, c),
+                    mtH("span", { className: "ml-auto text-xs text-stone-400 shrink-0" }, fmtU((calc.byCatAll[c] || {})[unit] || 0)))),
+                mtH("div", { className: "flex justify-end mt-1.5" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-amber-500 text-stone-900 font-bold text-xs rounded-lg px-5 py-1.5" }, "OK")))),
         mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
             mtH(MtMultiSelect, { label: "Canal", values: chanValues, onChange: onChans, allLabel: "Todos", options: calc.channels.map((c) => [c, mtChannelLabel(c)]) }),
             mtH("div", { className: "text-[11px] text-stone-400" }, upd ? "Relatório SAP atualizado em " + new Date(upd).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "")),

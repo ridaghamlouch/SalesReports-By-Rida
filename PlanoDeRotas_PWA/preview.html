@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-17-vendas-10";
+const APP_BUILD = "2026-10-17-vendas-11";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -2919,7 +2919,10 @@ function CompanySales() {
         const rankOf = {}; allTops.forEach((k, i) => { rankOf[k] = i; });
         const norm = (x) => String(x || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         const q = search ? norm(prodQ).trim() : "";
-        const tops = q ? allTops.filter((k) => q.split(/\s+/).every((w) => norm((label ? label(k, 0) : k) + " " + k).includes(w))) : allTops;
+        // match the start of words in the name (so "750" or "1.5kg" find the size, not digits inside codes); a code needs 4+ digits
+        const words = (x) => norm(x).split(/[^a-z0-9]+/).filter(Boolean);
+        const qw = q ? words(q) : [];
+        const tops = qw.length ? allTops.filter((k) => { const nw = words(label ? label(k, 0) : k); return qw.every((w) => nw.some((x) => x.startsWith(w)) || (/^\d{4,}$/.test(w) && String(k).includes(w))); }) : allTops;
         const grand = (m) => allTops.reduce((a, k) => a + cell(k, m), 0), G = ms.reduce((a, m) => a + grand(m), 0);
         const num = (n) => !n ? "" : unit === "kz" ? (n / 1e6).toLocaleString("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : unit === "t" ? n.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : mtFmt(n);
         const td = "px-2 py-1.5 text-right whitespace-nowrap";

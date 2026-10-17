@@ -2669,7 +2669,9 @@ function CompanySales() {
     // drill-down like Metas: Início > Gestor > Canal > Supervisor > Vendedor
     const [path, setPath] = useState([]); // [{ k: "mgr"|"ch"|"sup"|"seller", val }]
     const [chans, setChans] = useState([]); // channel filter (several allowed); empty = all
-    const [cats, setCats] = useState([]); // category filter (several allowed); empty = all
+    const [cats, setCatsRaw] = useState([]); // category filter (several allowed); empty = all
+    const [subs, setSubs] = useState([]); // subcategory filter: ["CATEGORIA|SUB", ...]; empty = all
+    const setCats = (v) => { setCatsRaw(v); setSubs([]); };
     const month = selMonths.length ? selMonths[selMonths.length - 1] : "";
     const setMonth = (m) => setSelMonths(m ? [m] : []);
     const [err, setErr] = useState(null);
@@ -2704,14 +2706,14 @@ function CompanySales() {
     };
     const calc = useMemo(() => {
         if (!all || !month) return null;
-        const chSet = new Set(chans), catSet = new Set(cats);
-        const pass = (r) => { const it = items[r[1]]; return path.every((p) => fieldOf(r[0], p.k) === p.val) && (!chSet.size || chSet.has(chOf(r[0]))) && (!catSet.size || catSet.has((it && it.c) || "SEM CATEGORIA")); };
+        const chSet = new Set(chans), catSet = new Set(cats), subSet = new Set(subs);
+        const pass = (r) => { const it = items[r[1]]; return path.every((p) => fieldOf(r[0], p.k) === p.val) && (!chSet.size || chSet.has(chOf(r[0]))) && (!catSet.size || catSet.has((it && it.c) || "SEM CATEGORIA")) && (!subSet.size || subSet.has(((it && it.c) || "SEM CATEGORIA") + "|" + ((it && it.s) || "SEM SUBCATEGORIA"))); };
         const tot = (rows) => { const o = { kz: 0, t: 0, cx: 0 }; rows.forEach((r) => { if (!pass(r)) return; const it = items[r[1]]; o.kz += r[3] || 0; o.t += val(r, it, "t"); o.cx += r[2]; }); return o; };
         const months = Object.keys(all).sort();
         const perMonth = months.map((m) => [m, tot(all[m])]);
         const sm = selMonths.filter((m) => all[m]).sort();
         const rows = [].concat(...sm.map((m) => all[m]));
-        const byCh = {}, byCat = {}, byProd = {}, byLevel = {};
+        const byCh = {}, byCat = {}, bySub = {}, byProd = {}, byLevel = {};
         rows.forEach((r) => {
             if (!pass(r)) return;
             const it = items[r[1]];
@@ -2720,6 +2722,7 @@ function CompanySales() {
             add(byCh, chOf(r[0]) || "OUTROS");
             if (nextLevel) add(byLevel, fieldOf(r[0], nextLevel[0]));
             add(byCat, (it && it.c) || "SEM CATEGORIA");
+            add(bySub, ((it && it.c) || "SEM CATEGORIA") + "|" + ((it && it.s) || "SEM SUBCATEGORIA"));
             add(byProd, r[1], { name: (it && it.d) || r[1], c: (it && it.c) || "" });
         });
         const cur = tot(rows);
@@ -2731,8 +2734,8 @@ function CompanySales() {
         const channels = [...new Set(Object.values(all).flat().map((r) => chOf(r[0])).filter(Boolean))].sort();
         const levelTitle = nextLevel ? { mgr: "Por gestor", ch: "Por canal", sup: "Por supervisor", seller: "Por vendedor" }[nextLevel[0]] : "";
         const catList = [...new Set(Object.values(items).map((i) => i.c))].sort();
-        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, byProd, byLevel, levelTitle, channels, catList, months };
-    }, [all, items, team, selMonths, path, chans, cats]);
+        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, bySub, byProd, byLevel, levelTitle, channels, catList, months };
+    }, [all, items, team, selMonths, path, chans, cats, subs]);
     if (err) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-rose-50 border border-rose-200 text-rose-800 text-sm rounded-lg p-3" }, err));
     if (!calc) return mtH("div", { className: "p-6 text-center text-stone-400 text-sm" }, idx && !month ? "Ainda não há vendas importadas." : "A carregar vendas...");
     const U = { kz: ["Kz", (n) => mtFmt(n) + " Kz"], t: ["Toneladas", (n) => mtFmtT(n) + " t"], cx: ["Caixas", (n) => mtFmt(n) + " cx"] };
@@ -2754,7 +2757,8 @@ function CompanySales() {
         if (vals.length <= 1) return pickChannel(vals[0] || "");
         setPath([]); setChans(vals);
     };
-    const catLabel = cats.length === 0 ? "" : cats.length <= 2 ? cats.join(" + ") : cats.length + " categorias";
+    const subLabel = subs.length === 0 ? "" : subs.length <= 2 ? subs.map((k) => k.split("|")[1]).join(" + ") : subs.length + " subcategorias";
+    const catLabel = subs.length ? subLabel : cats.length === 0 ? "" : cats.length <= 2 ? cats.join(" + ") : cats.length + " categorias";
     const chanLabel = chans.length > 1 ? (chans.length <= 2 ? chans.map(mtChannelLabel).join(" + ") : chans.length + " canais") : "";
     const chg = (a, b) => (b ? Math.round(((a - b) / Math.abs(b)) * 1000) / 10 : null);
     const Chg = ({ a, b }) => { const c = chg(a, b); if (c == null) return null; return mtH("span", { className: `text-[11px] font-semibold ${c >= 0 ? "text-emerald-400" : "text-rose-400"}` }, (c >= 0 ? "▲ " : "▼ ") + Math.abs(c).toLocaleString("pt-PT") + "% vs " + monthsLabel(calc.prevMs, true)); };
@@ -2769,6 +2773,30 @@ function CompanySales() {
                     mtH("span", { className: "font-semibold text-stone-800 truncate" }, label(k, v)),
                     mtH("span", { className: "text-stone-600 shrink-0" }, fmtU(v[unit]), mtH("span", { className: "text-stone-400" }, total ? "  " + Math.round((v[unit] / total) * 100) + "%" : ""))),
                 mtH("div", { className: "h-1.5 bg-stone-100 rounded-full overflow-hidden mt-1" }, mtH("div", { className: "h-full bg-blue-900", style: { width: (Math.max(0, v[unit]) / max) * 100 + "%" } })))));
+    };
+    // categories with their subcategories always listed underneath (subcategory % = share of its category)
+    const CatList = () => {
+        const list = Object.entries(calc.byCat).filter(([, v]) => v[unit] !== 0).sort((a, b) => b[1][unit] - a[1][unit]);
+        const max = Math.max(1, ...list.map(([, v]) => Math.abs(v[unit])));
+        const total = list.reduce((a, [, v]) => a + v[unit], 0);
+        const subsOf = (c) => Object.entries(calc.bySub).filter(([k, v]) => k.split("|")[0] === c && v[unit] !== 0).sort((a, b) => b[1][unit] - a[1][unit]);
+        return mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3" },
+            mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide mb-2" }, "Por categoria · toque para filtrar"),
+            subs.length > 0 && mtH("button", { onClick: () => setSubs([]), className: "text-[11px] text-blue-900 font-semibold mb-1" }, "× Limpar subcategoria"),
+            list.length === 0 ? mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.") : list.map(([c, v]) => {
+                const sl = subsOf(c);
+                return mtH("div", { key: c, className: "py-1" },
+                    mtH("button", { onClick: () => setCats([c]), className: "w-full text-left py-0.5" },
+                        mtH("div", { className: "flex justify-between gap-2 text-xs" },
+                            mtH("span", { className: "font-semibold text-stone-800 truncate" }, c),
+                            mtH("span", { className: "text-stone-600 shrink-0" }, fmtU(v[unit]), mtH("span", { className: "text-stone-400" }, total ? "  " + Math.round((v[unit] / total) * 100) + "%" : ""))),
+                        mtH("div", { className: "h-1.5 bg-stone-100 rounded-full overflow-hidden mt-1" }, mtH("div", { className: "h-full bg-blue-900", style: { width: (Math.max(0, v[unit]) / max) * 100 + "%" } }))),
+                    sl.map(([k, sv]) => mtH("button", { key: k, onClick: () => { setCatsRaw([c]); setSubs([k]); }, className: "w-full text-left pl-3 py-0.5" },
+                        mtH("div", { className: "flex justify-between gap-2 text-[11px]" },
+                            mtH("span", { className: `truncate ${subs.includes(k) ? "font-bold text-blue-900" : "text-stone-600"}` }, k.split("|")[1]),
+                            mtH("span", { className: "text-stone-500 shrink-0" }, fmtU(sv[unit]), mtH("span", { className: "text-stone-400" }, v[unit] ? "  " + Math.round((sv[unit] / v[unit]) * 100) + "%" : ""))),
+                        mtH("div", { className: "h-1 bg-stone-100 rounded-full overflow-hidden mt-0.5" }, mtH("div", { className: "h-full bg-blue-300", style: { width: (v[unit] ? Math.max(0, sv[unit]) / v[unit] : 0) * 100 + "%" } })))));
+            }));
     };
     const pm = calc.perMonth.slice(-7);
     const pmMax = Math.max(1, ...pm.map(([, v]) => v[unit]));
@@ -2812,9 +2840,9 @@ function CompanySales() {
                 mtH("td", { className: "py-1 text-stone-700" }, mtMonthLabel(m)),
                 mtH("td", { className: "py-1 text-right font-semibold" }, fmtU(v[unit])),
                 mtH("td", { className: "py-1 text-right w-16" }, m === curM ? mtH("span", { className: "text-stone-400" }, "em curso") : (() => { const c = arr[i + 1] ? chg(v[unit], arr[i + 1][1][unit]) : null; return c == null ? "" : mtH("span", { className: c >= 0 ? "text-emerald-600" : "text-rose-600" }, (c >= 0 ? "+" : "") + c.toLocaleString("pt-PT") + "%"); })())))))),
+        mtH(CatList, null),
         nextLevel && mtH(BarList, { title: calc.levelTitle + (nextLevel[0] === "seller" ? "" : " · toque para abrir"), entries: Object.entries(calc.byLevel), label: (k) => (nextLevel[0] === "ch" ? mtChannelLabel(k) : k) || "(sem " + nextLevel[1].toLowerCase() + ")", onPick: nextLevel[0] === "seller" ? (k) => setPath([...path, { k: "seller", val: k }]) : (k) => setPath([...path, { k: nextLevel[0], val: k }]) }),
         path.length === 0 && mtH(BarList, { title: "Por canal · toque para abrir", entries: Object.entries(calc.byCh), label: (k) => mtChannelLabel(k), onPick: (k) => pickChannel(k === "OUTROS" ? "" : k) }),
-        cats.length !== 1 && mtH(BarList, { title: "Por categoria · toque para filtrar", entries: Object.entries(calc.byCat), label: (k) => k, onPick: (k) => setCats([k]) }),
         mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3" },
             mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide mb-2" }, "Produtos mais vendidos · " + U[unit][0]),
             prods.slice(0, topN).map(([code, v], i) => mtH("div", { key: code, className: "flex gap-2 py-1.5 border-b border-stone-100 last:border-0" },
@@ -2825,9 +2853,9 @@ function CompanySales() {
                 mtH("div", { className: "text-xs font-bold text-blue-900 shrink-0" }, fmtU(v[unit])))),
             prods.length > topN && mtH("button", { onClick: () => setTopN(topN + 20), className: "w-full text-sm text-blue-900 font-semibold py-2" }, "Ver mais"),
             prods.length === 0 && mtH("div", { className: "text-sm text-stone-400" }, "Sem vendas.")),
-        mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly,
+        mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats, subs]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly,
             passSeller: (s) => path.every((p) => fieldOf(s, p.k) === p.val) && (!chans.length || chans.includes(chOf(s))),
-            passItem: (code) => !cats.length || cats.includes((items[code] && items[code].c) || "SEM CATEGORIA") }));
+            passItem: (code) => { const it = items[code], c = (it && it.c) || "SEM CATEGORIA"; return (!cats.length || cats.includes(c)) && (!subs.length || subs.includes(c + "|" + ((it && it.s) || "SEM SUBCATEGORIA"))); } }));
 }
 // ---- the header + view used for metas-only people (and managers / owner) ----
 // tabs as emoji tiles inside a black greeting card (same look as Admin / Direção)

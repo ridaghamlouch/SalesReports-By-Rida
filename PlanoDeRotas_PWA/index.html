@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-17-vendas-6";
+const APP_BUILD = "2026-10-17-vendas-7";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -2771,6 +2771,26 @@ function CompanySales() {
         const t = setTimeout(measure, 300);
         return () => { window.removeEventListener("resize", measure); clearTimeout(t); };
     }, [!!calc]);
+    // the open filter panel closes by itself when the page is scrolled or when tapping outside it
+    useEffect(() => {
+        if (!fPanel) return;
+        const isDoc = (t) => t === document || t === document.documentElement || t === document.body;
+        const pos = (t) => isDoc(t) ? (window.scrollY || document.documentElement.scrollTop || 0) : (t.scrollTop || 0);
+        // positions when the panel opened, so the first scroll already counts
+        const start = new Map([[document, pos(document)]]);
+        document.querySelectorAll("*").forEach((x) => { if (x.scrollTop > 0) start.set(x, x.scrollTop); });
+        const onScroll = (e) => {
+            const t = isDoc(e.target) ? document : e.target, el = stickRef.current;
+            if (el && t instanceof Node && t !== document && el.contains(t)) return;
+            if (t && t.closest && t.closest("[data-hscroll]")) return; // sideways swipe in the table
+            if (!start.has(t)) start.set(t, 0);
+            if (Math.abs(pos(t) - start.get(t)) > 40) setFPanel(null);
+        };
+        const onDown = (e) => { const el = stickRef.current; if (el && !el.contains(e.target)) setFPanel(null); };
+        document.addEventListener("scroll", onScroll, true);
+        document.addEventListener("pointerdown", onDown, true);
+        return () => { document.removeEventListener("scroll", onScroll, true); document.removeEventListener("pointerdown", onDown, true); };
+    }, [fPanel]);
     // newest months are on the right: keep them in view
     useEffect(() => { const r = monthRowRef.current; if (r) r.scrollLeft = r.scrollWidth; }, [!!calc]);
     if (err) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-rose-50 border border-rose-200 text-rose-800 text-sm rounded-lg p-3" }, err));
@@ -2821,7 +2841,7 @@ function CompanySales() {
         const num = (n) => !n ? "" : unit === "kz" ? (n / 1e6).toLocaleString("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : unit === "t" ? n.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : mtFmt(n);
         const toggle = (list, set, k) => set(list.includes(k) ? list.filter((x) => x !== k) : [...list, k]);
         const td = "px-2 py-1.5 text-right whitespace-nowrap";
-        const first = "sticky left-0 z-[1] px-2 py-1.5 text-left whitespace-nowrap max-w-[150px] truncate";
+        const first = "sticky left-0 z-[1] px-2 py-1.5 text-left whitespace-nowrap max-w-[150px] truncate shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)]";
         const cells = (k, cls) => [...ms.map((m) => mtH("td", { key: m, className: td + " " + cls }, num(cell(k, m)))), multi && mtH("td", { key: "t", className: td + " font-semibold " + cls }, num(rowTot(k)))];
         const body = [];
         cats.forEach((c) => {
@@ -2845,7 +2865,7 @@ function CompanySales() {
                 mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, "Por categoria \u00b7 toque para abrir"),
                 mtH("div", { className: "text-[10px] text-stone-400" }, unit === "kz" ? "M Kz" : unit === "t" ? "Toneladas" : "Caixas")),
             cats.length === 0 ? mtH("div", { className: "text-sm text-stone-400 px-3 pb-3" }, "Sem vendas.") :
-                mtH("div", { className: "overflow-x-auto" },
+                mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "contain", WebkitOverflowScrolling: "touch" } },
                     mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
                         mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
                             mtH("th", { className: first + " bg-blue-900 font-semibold" }, "Categoria"),
@@ -2864,7 +2884,7 @@ function CompanySales() {
         const next = selMonths.includes(m) ? selMonths.filter((x) => x !== m) : [...selMonths, m].sort();
         setSelMonths(next.length ? next : [m]);
     };
-    const lastN = (n) => setSelMonths(calc.months.slice(-n));
+    const lastN = (n) => { setSelMonths(calc.months.slice(-n)); setFPanel(null); };
     const catOpts = calc.catList.slice().sort((a, b) => ((calc.byCatAll[b] || {})[unit] || 0) - ((calc.byCatAll[a] || {})[unit] || 0));
     const catOn = (c) => !cats.length || cats.includes(c);
     const tapCat = (c) => {
@@ -2901,12 +2921,12 @@ function CompanySales() {
                     mtH(Opt, { on: !allMonths && calc.sm.length === 1 && calc.sm[0] === calc.months[calc.months.length - 1], onClick: () => lastN(1) }, "Este m\u00eas"),
                     mtH(Opt, { on: !allMonths && calc.sm.length === 3 && calc.sm.join() === calc.months.slice(-3).join(), onClick: () => lastN(3) }, "3 meses"),
                     mtH(Opt, { on: !allMonths && calc.sm.length === 6 && calc.sm.join() === calc.months.slice(-6).join(), onClick: () => lastN(6) }, "6 meses"),
-                    mtH(Opt, { on: allMonths, onClick: () => setSelMonths(calc.months.slice()) }, "Todos")),
+                    mtH(Opt, { on: allMonths, onClick: () => { setSelMonths(calc.months.slice()); setFPanel(null); } }, "Todos")),
                 mtH("div", { className: "text-[10px] font-bold text-stone-400 uppercase tracking-wide" }, "Ou toque nos meses"),
                 mtH("div", { className: "grid grid-cols-4 gap-1.5" }, calc.months.map((m) => mtH(Opt, { key: m, on: selMonths.includes(m), onClick: () => tapMonth(m) }, MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + " " + m.slice(2, 4)))),
                 mtH("div", { className: "flex justify-end" }, mtH("button", { onClick: () => setFPanel(null), className: "bg-blue-900 text-white font-bold text-xs rounded-lg px-5 py-1.5" }, "OK"))),
             fPanel === "c" && mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-2.5 flex flex-col max-h-[60vh] overflow-y-auto" },
-                mtH("button", { onClick: () => setCats([]), className: "flex items-center gap-2 py-1.5 text-sm text-left" },
+                mtH("button", { onClick: () => { setCats([]); setFPanel(null); }, className: "flex items-center gap-2 py-1.5 text-sm text-left" },
                     mtH("span", { className: `w-4 h-4 rounded flex items-center justify-center text-[10px] border ${!cats.length ? "bg-blue-900 border-blue-900 text-white" : "border-stone-400"}` }, !cats.length ? "\u2713" : ""),
                     mtH("span", { className: "font-semibold text-stone-800" }, "Todas")),
                 catOpts.map((c) => mtH("button", { key: c, onClick: () => tapCat(c), className: "flex items-center gap-2 py-1.5 text-sm text-left border-t border-stone-100" },

@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-29-mercados-meses-1";
+const APP_BUILD = "2026-10-29-mercados-canal-1";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -3064,7 +3064,7 @@ function CompanySales() {
         path.length === 0 && TreeTable({ id: "ch", title: "Por canal \u00b7 toque para abrir", head: "Canal", data: calc.chanTree, kinds: [1, 2, 3], pct: true,
             label: (v, d) => d === 0 ? mtChannelLabel(v === "OUTROS" ? "" : v) : (v || (d === 1 ? "(sem supervisor)" : "(sem nome)")) }),
         TreeTable({ id: "prod", title: "Produtos mais vendidos", head: "Produto", data: calc.prodTree, rank: true, limit: topN, search: true, label: (code) => (items[code] && items[code].d) || code }),
-        mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly,
+        mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly, chOf,
             passSeller: (s) => path.every((p) => fieldOf(s, p.k) === p.val) && (!chans.length || chans.includes(chOf(s))),
             passItem: (code) => !cats.length || cats.includes((items[code] && items[code].c) || "SEM CATEGORIA") }));
 }
@@ -4733,7 +4733,7 @@ function mtSelfSupNoOrders(res, supSlug, roster) {
 // Uses the per-customer SAP detail (metas_sales/cli-YYYY-MM, read only when opened) + the market of each
 // customer from the route list. Per market: value, change vs the previous period, how many of the market's
 // clients bought (and each product), clients who bought before but not now, focus products.
-function mtCliPeriod(docs, months, custList, passSeller, passItem, items, routeById) {
+function mtCliPeriod(docs, months, custList, passSeller, passItem, items, routeById, keyOf) {
     const out = { mk: {}, cust: {} };
     months.forEach((m) => {
         const d = docs[m]; if (!d) return;
@@ -4741,7 +4741,8 @@ function mtCliPeriod(docs, months, custList, passSeller, passItem, items, routeB
         for (const row of data) {
             const seller = mtCliSeller(row, custList); if (!seller || seller === "0" || !passSeller(seller)) continue;
             const cid = row[0] || ""; const rc = routeById[cid];
-            const mk = rc ? mtMk(rc.market) : "SEM MERCADO";
+            const mk0 = rc ? mtMk(rc.market) : "SEM MERCADO";
+            const mk = keyOf ? keyOf(seller, mk0) : mk0; // "channel\u0001market" when grouped by channel
             for (let j = 2; j < row.length; j += 4) {
                 const code = codes[row[j]]; if (!passItem(code)) continue;
                 const it = items[code]; const q = row[j + 1] || 0, kz = row[j + 2] || 0;
@@ -4758,8 +4759,9 @@ function mtCliPeriod(docs, months, custList, passSeller, passItem, items, routeB
     return out;
 }
 function mtScrollTo(id) { setTimeout(() => { try { const el = document.getElementById(id); if (el) el.scrollIntoView({ block: "start" }); } catch (e) { } }, 60); }
-function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fkey, projF, curLabel, prevLabel, curOnly }) {
+function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fkey, projF, curLabel, prevLabel, curOnly, chOf }) {
     const [open, setOpen] = useState(false);
+    const [openCh, setOpenCh] = useState({}); // channel -> how many of its markets are shown (0 = closed)
     const [docs, setDocs] = useState(null);
     const [missing, setMissing] = useState([]);
     const [custList, setCustList] = useState({});
@@ -4787,20 +4789,23 @@ function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fk
         if (!docs) return null;
         const route = (typeof window !== "undefined" && window.__mtRouteClients) || [];
         const routeById = {}; route.forEach((c) => { if (c.id) routeById[mtCode(c.id)] = c; });
-        const cur = mtCliPeriod(docs, sm, custList, passSeller, passItem, items, routeById);
-        const prev = prevMs.length ? mtCliPeriod(docs, prevMs, custList, passSeller, passItem, items, routeById) : null;
+        // markets are kept per channel (channel of the customer's salesperson): "channel\u0001market"
+        const keyOf = (s, mk) => ((chOf && chOf(s)) || "") + "\u0001" + mk;
+        const cur = mtCliPeriod(docs, sm, custList, passSeller, passItem, items, routeById, keyOf);
+        const prev = prevMs.length ? mtCliPeriod(docs, prevMs, custList, passSeller, passItem, items, routeById, keyOf) : null;
         // several months chosen: each market month by month (columns, like the product table)
-        const perM = sm.length > 1 ? sm.map((m) => mtCliPeriod(docs, [m], custList, passSeller, passItem, items, routeById).mk) : null;
+        const perM = sm.length > 1 ? sm.map((m) => mtCliPeriod(docs, [m], custList, passSeller, passItem, items, routeById, keyOf).mk) : null;
         // clients of each market on the route (for "X of N clients bought"), with the same team filter
         const nOf = {};
-        route.forEach((c) => { const id = mtCode(c.id); const s = custList[id] || c.salesperson; if (!s || !passSeller(s)) return; const mk = mtMk(c.market); nOf[mk] = (nOf[mk] || 0) + 1; });
+        route.forEach((c) => { const id = mtCode(c.id); const s = custList[id] || c.salesperson; if (!s || !passSeller(s)) return; const mk = keyOf(s, mtMk(c.market)); nOf[mk] = (nOf[mk] || 0) + 1; });
         const mks = [...new Set(Object.keys(cur.mk).concat(prev ? Object.keys(prev.mk) : []))];
         const list = mks.map((mk) => {
             const c = cur.mk[mk], p = prev && prev.mk[mk];
             const lost = prev ? Object.entries(prev.cust).filter(([id, o]) => o.mk === mk && !(cur.cust[id] && cur.cust[id].v.kz > 0) && o.v.kz > 0).map(([id, o]) => ({ id, o })) : [];
             const fz = focus.map((f) => { const P = c && c.prod[mtCode(f.code || "")]; return { name: f.name, n: P ? P.cust.size : 0 }; });
             const fzAny = c ? [...c.cust].filter((id) => focus.some((f) => cur.cust[id] && cur.cust[id].prod[mtCode(f.code || "")])).length : 0;
-            return { mk, v: c ? c.v : { kz: 0, t: 0, cx: 0 }, pv: p ? p.v : null, buyers: c ? c.cust.size : 0, n: Math.max(nOf[mk] || 0, c ? c.cust.size : 0), lost, fz, fzAny, prod: c ? c.prod : {}, pprod: p ? p.prod : {}, mv: perM ? perM.map((o) => (o[mk] ? o[mk].v : null)) : null };
+            const sp = mk.indexOf("\u0001");
+            return { mk, ch: mk.slice(0, sp), name: mk.slice(sp + 1), v: c ? c.v : { kz: 0, t: 0, cx: 0 }, pv: p ? p.v : null, buyers: c ? c.cust.size : 0, n: Math.max(nOf[mk] || 0, c ? c.cust.size : 0), lost, fz, fzAny, prod: c ? c.prod : {}, pprod: p ? p.prod : {}, mv: perM ? perM.map((o) => (o[mk] ? o[mk].v : null)) : null };
         });
         return { list, cur, prev, routeById };
     }, [docs, custList, fkey, sm.join(), prevMs.join(), items]);
@@ -4817,12 +4822,12 @@ function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fk
     const exportX = () => {
         if (!calc) return;
         const wb = XLSX.utils.book_new();
-        const a1 = [["Mercado"].concat(multi ? sm.map((x) => "Valor " + mtMonthLabel(x) + " (Kz)") : [], ["Valor (Kz)", "Toneladas", "Caixas", prevLabel ? "Valor " + prevLabel + " (Kz)" : "Anterior (Kz)", "Clientes que compraram", "Clientes no mercado", "Sem compra (vs anterior)", "Compraram produtos em foco"])];
-        calc.list.slice().sort((a, b) => b.v.kz - a.v.kz).forEach((m) => a1.push([m.mk].concat(multi ? m.mv.map((v) => (v ? Math.round(v.kz) : "")) : [], [Math.round(m.v.kz), Math.round(m.v.t * 100) / 100, m.v.cx, m.pv ? Math.round(m.pv.kz) : "", m.buyers, m.n, m.lost.length, m.fzAny])));
-        const a2 = [["Mercado", "Código", "Produto", "Categoria", "Valor (Kz)", "Toneladas", "Caixas", "Clientes que compraram", "Clientes no mercado"]];
-        calc.list.forEach((m) => Object.entries(m.prod).sort((x, y) => y[1].v.kz - x[1].v.kz).forEach(([code, p]) => { const it = items[code] || {}; a2.push([m.mk, code, it.d || code, it.c || "", Math.round(p.v.kz), Math.round(p.v.t * 100) / 100, p.v.cx, p.cust.size, m.n]); }));
-        const a3 = [["Mercado", "Código SAP", "Cliente", "Vendedor", "Comprou em " + prevLabel + " (Kz)"]];
-        calc.list.forEach((m) => m.lost.sort((x, y) => y.o.v.kz - x.o.v.kz).forEach(({ id, o }) => a3.push([m.mk, id, (calc.routeById[id] || {}).name || "", o.seller, Math.round(o.v.kz)])));
+        const a1 = [["Canal", "Mercado"].concat(multi ? sm.map((x) => "Valor " + mtMonthLabel(x) + " (Kz)") : [], ["Valor (Kz)", "Toneladas", "Caixas", prevLabel ? "Valor " + prevLabel + " (Kz)" : "Anterior (Kz)", "Clientes que compraram", "Clientes no mercado", "Sem compra (vs anterior)", "Compraram produtos em foco"])];
+        calc.list.slice().sort((a, b) => b.v.kz - a.v.kz).forEach((m) => a1.push([mtChannelLabel(m.ch), m.name].concat(multi ? m.mv.map((v) => (v ? Math.round(v.kz) : "")) : [], [Math.round(m.v.kz), Math.round(m.v.t * 100) / 100, m.v.cx, m.pv ? Math.round(m.pv.kz) : "", m.buyers, m.n, m.lost.length, m.fzAny])));
+        const a2 = [["Canal", "Mercado", "Código", "Produto", "Categoria", "Valor (Kz)", "Toneladas", "Caixas", "Clientes que compraram", "Clientes no mercado"]];
+        calc.list.forEach((m) => Object.entries(m.prod).sort((x, y) => y[1].v.kz - x[1].v.kz).forEach(([code, p]) => { const it = items[code] || {}; a2.push([mtChannelLabel(m.ch), m.name, code, it.d || code, it.c || "", Math.round(p.v.kz), Math.round(p.v.t * 100) / 100, p.v.cx, p.cust.size, m.n]); }));
+        const a3 = [["Canal", "Mercado", "Código SAP", "Cliente", "Vendedor", "Comprou em " + prevLabel + " (Kz)"]];
+        calc.list.forEach((m) => m.lost.sort((x, y) => y.o.v.kz - x.o.v.kz).forEach(({ id, o }) => a3.push([mtChannelLabel(m.ch), m.name, id, (calc.routeById[id] || {}).name || "", o.seller, Math.round(o.v.kz)])));
         [[a1, "Mercados"], [a2, "Produtos por mercado"], [a3, "Sem compra"]].forEach(([a, n]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a), n));
         XLSX.writeFile(wb, "Vendas_por_mercado_" + sm.join("_") + ".xlsx");
     };
@@ -4838,8 +4843,8 @@ function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fk
         return mtH("div", { id: "mt-mkt-sales", className: "flex flex-col gap-3 scroll-mt-40" },
             mtH("button", { onClick: () => { setSel(""); setNProd(15); setShowLost(false); mtScrollTo("mt-mkt-sales"); }, className: "self-start text-sm font-semibold text-blue-900" }, "‹ Todos os mercados"),
             mtH("div", { className: "bg-stone-900 text-white rounded-2xl p-4" },
-                mtH("div", { className: "text-stone-400 text-xs" }, curLabel + (curOnly ? " (em curso)" : "")),
-                mtH("div", { className: "text-lg font-bold" }, M.mk),
+                mtH("div", { className: "text-stone-400 text-xs" }, curLabel + (curOnly ? " (em curso)" : "") + (chOf ? " \u00b7 " + mtChannelLabel(M.ch) : "")),
+                mtH("div", { className: "text-lg font-bold" }, M.name),
                 mtH("div", { className: "text-2xl font-bold text-amber-400 mt-1" }, fmtU(vu(M.v))),
                 M.pv && mtH("div", { className: "text-[11px] text-stone-300" }, (curOnly ? "ritmo do mês vs " : "vs ") + prevLabel + ": " + fmtU(vu(M.pv)) + " ", mtH(Ch, { a: vu(M.v), b: vu(M.pv) })),
                 mtH("div", { className: "text-[11px] text-stone-300 mt-1" }, M.buyers + " de " + M.n + " clientes compraram" + (M.n ? " (" + Math.round(M.buyers / M.n * 100) + "%)" : ""))),
@@ -4872,17 +4877,53 @@ function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fk
     const list = calc.list.filter((m) => vu(m.v) > 0 || m.lost.length).sort((a, b) => vu(b.v) - vu(a.v));
     const total = list.reduce((a, m) => a + vu(m.v), 0), max = Math.max(1, ...list.map((m) => vu(m.v)));
     const lostAll = list.reduce((a, m) => a + m.lost.length, 0);
+    // channels: each one adds up its markets; tap a channel to see its markets
+    const groups = (() => {
+        const g = {}, z = () => ({ kz: 0, t: 0, cx: 0 }), addV = (a, b) => { if (b) { a.kz += b.kz; a.t += b.t; a.cx += b.cx; } };
+        list.forEach((m) => {
+            const o = g[m.ch] || (g[m.ch] = { ch: m.ch, items: [], v: z(), pv: null, mv: multi ? sm.map(z) : null, buyers: 0, n: 0, lost: 0, fzAny: 0 });
+            o.items.push(m); addV(o.v, m.v); if (m.pv) { o.pv = o.pv || z(); addV(o.pv, m.pv); }
+            if (multi) m.mv.forEach((v, i) => addV(o.mv[i], v));
+            o.buyers += m.buyers; o.n += m.n; o.lost += m.lost.length; o.fzAny += m.fzAny;
+        });
+        return Object.values(g).sort((a, b) => vu(b.v) - vu(a.v));
+    })();
+    const byCh = !!chOf && groups.length > 1;
+    const openMk = (m) => { setSel(m.mk); mtScrollTo("mt-mkt-sales"); };
+    const row = (key, label, o, lostN, onClick, kind) => {
+        const c = o.pv ? chgP(vu(o.v), vu(o.pv)) : null, sub = kind === "sub", bg = sub ? "bg-slate-50" : "bg-white";
+        const td = "px-2 py-1.5 border-t border-stone-200 text-right whitespace-nowrap " + bg;
+        return mtH("tr", { key, onClick, className: "cursor-pointer" },
+            mtH("td", { className: "sticky left-0 z-[1] " + bg + " px-2 py-1.5 border-t border-stone-200 max-w-[170px] truncate shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)] " + (sub ? "pl-5 font-semibold text-stone-700" : "font-bold text-stone-900") },
+                mtH("span", { className: "text-blue-600" }, kind === "ch" && openCh[key] ? "\u25BE " : "\u25B8 "), label),
+            ...(multi ? o.mv.map((v, i) => mtH("td", { key: sm[i], className: td + " text-stone-700" }, numM(vu(v)))) : []),
+            mtH("td", { className: td + " font-bold text-blue-900" }, fmtT(vu(o.v))),
+            mtH("td", { className: td + " text-stone-400" }, total ? Math.round(vu(o.v) / total * 100) + "%" : ""),
+            calc.prev && mtH("td", { className: td }, c == null ? "" : mtH("span", { className: c >= 0 ? "text-emerald-600" : "text-rose-600" }, (c >= 0 ? "\u25B2 " : "\u25BC ") + Math.abs(c).toLocaleString("pt-PT") + "%")),
+            mtH("td", { className: td + " text-stone-600" }, o.buyers + " de " + o.n),
+            lostAll > 0 && mtH("td", { className: td + " text-rose-600" }, lostN || ""),
+            focus.length > 0 && mtH("td", { className: td + " text-amber-700" }, o.fzAny + "/" + o.n));
+    };
+    const body = byCh ? [].concat(...groups.map((g) => {
+        const lim = openCh[g.ch] || 0, toggle = () => setOpenCh(Object.assign({}, openCh, { [g.ch]: lim ? 0 : 30 }));
+        const r = [row(g.ch, mtChannelLabel(g.ch), g, g.lost, toggle, "ch")];
+        if (lim) {
+            g.items.slice(0, lim).forEach((m) => r.push(row(m.mk, m.name, m, m.lost.length, () => openMk(m), "sub")));
+            if (g.items.length > lim) r.push(mtH("tr", { key: g.ch + "\u0002more" }, mtH("td", { colSpan: 99, onClick: () => setOpenCh(Object.assign({}, openCh, { [g.ch]: lim + 50 })), className: "sticky left-0 bg-slate-50 pl-5 px-2 py-1.5 border-t border-stone-200 text-blue-900 font-semibold cursor-pointer text-left" }, "Ver mais mercados (" + (g.items.length - lim) + ")")));
+        }
+        return r;
+    })) : list.slice(0, nMk).map((m) => row(m.mk, m.name, m, m.lost.length, () => openMk(m), "mk"));
     return mtH("div", { id: "mt-mkt-sales", className: "flex flex-col gap-3 scroll-mt-40" },
         note,
         mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
             mtH("div", { className: "flex justify-between items-baseline px-3 pt-3 pb-2" },
-                mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, "Vendas por mercado \u00b7 toque para abrir"),
+                mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, byCh ? "Vendas por canal e mercado \u00b7 toque para abrir" : "Vendas por mercado \u00b7 toque para abrir"),
                 mtH("div", { className: "text-[10px] text-stone-400" }, unit === "kz" ? (multi ? "M Kz" : "Kz") : unit === "t" ? "Toneladas" : "Caixas")),
             list.length === 0 ? mtH("div", { className: "text-sm text-stone-400 px-3 pb-3" }, "Sem vendas.") :
                 mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "none" } },
                     mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
                         mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
-                            mtH("th", { className: "sticky left-0 z-[1] bg-blue-900 px-2 py-1.5 text-left font-semibold" }, "Mercado"),
+                            mtH("th", { className: "sticky left-0 z-[1] bg-blue-900 px-2 py-1.5 text-left font-semibold whitespace-nowrap" }, byCh ? "Canal / Mercado" : "Mercado"),
                             ...(multi ? sm.map((x) => mtH("th", { key: x, className: "px-2 py-1.5 text-right font-semibold whitespace-nowrap" }, mLab(x))) : []),
                             mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, "Total"),
                             mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, "%"),
@@ -4890,15 +4931,7 @@ function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fk
                             mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, "Clientes"),
                             lostAll > 0 && mtH("th", { className: "px-2 py-1.5 text-right font-semibold whitespace-nowrap" }, "Sem compra"),
                             focus.length > 0 && mtH("th", { className: "px-2 py-1.5 text-right font-semibold" }, "\u2B50"))),
-                        mtH("tbody", null, list.slice(0, nMk).map((m) => { const c = m.pv ? chgP(vu(m.v), vu(m.pv)) : null; return mtH("tr", { key: m.mk, onClick: () => { setSel(m.mk); mtScrollTo("mt-mkt-sales"); }, className: "cursor-pointer" },
-                            mtH("td", { className: "sticky left-0 z-[1] bg-white px-2 py-1.5 border-t border-stone-200 font-bold text-stone-900 max-w-[150px] truncate shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)]" }, mtH("span", { className: "text-blue-600" }, "\u25B8 "), m.mk),
-                            ...(multi ? m.mv.map((v, i) => mtH("td", { key: sm[i], className: "px-2 py-1.5 border-t border-stone-200 text-right whitespace-nowrap text-stone-700" }, numM(vu(v)))) : []),
-                            mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right whitespace-nowrap font-bold text-blue-900" }, fmtT(vu(m.v))),
-                            mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right text-stone-400" }, total ? Math.round(vu(m.v) / total * 100) + "%" : ""),
-                            calc.prev && mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right whitespace-nowrap" }, c == null ? "" : mtH("span", { className: c >= 0 ? "text-emerald-600" : "text-rose-600" }, (c >= 0 ? "\u25B2 " : "\u25BC ") + Math.abs(c).toLocaleString("pt-PT") + "%")),
-                            mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right whitespace-nowrap text-stone-600" }, m.buyers + " de " + m.n),
-                            lostAll > 0 && mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right text-rose-600" }, m.lost.length || ""),
-                            focus.length > 0 && mtH("td", { className: "px-2 py-1.5 border-t border-stone-200 text-right text-amber-700 whitespace-nowrap" }, m.fzAny + "/" + m.n)); }),
+                        mtH("tbody", null, ...body,
                             mtH("tr", { className: "font-bold text-white" },
                                 mtH("td", { className: "sticky left-0 z-[1] bg-blue-900 px-2 py-1.5" }, "Total"),
                                 ...(multi ? sm.map((x, i) => mtH("td", { key: x, className: "bg-blue-900 px-2 py-1.5 text-right whitespace-nowrap" }, numM(list.reduce((a, m) => a + vu(m.mv[i]), 0)))) : []),
@@ -4908,7 +4941,7 @@ function MtMarketSales({ sm, prevMs, unit, fmtU, items, passSeller, passItem, fk
                                 mtH("td", { className: "bg-blue-900 px-2 py-1.5 text-right whitespace-nowrap" }, list.reduce((a, m) => a + m.buyers, 0) + " de " + list.reduce((a, m) => a + m.n, 0)),
                                 lostAll > 0 && mtH("td", { className: "bg-blue-900 px-2 py-1.5 text-right" }, lostAll),
                                 focus.length > 0 && mtH("td", { className: "bg-blue-900" }, ""))))),
-            list.length > nMk && mtH("button", { onClick: () => setNMk(nMk + 30), className: "w-full text-sm text-blue-900 font-semibold py-2 border-t border-stone-100" }, "Ver mais mercados (" + (list.length - nMk) + ")"),
+            !byCh && list.length > nMk && mtH("button", { onClick: () => setNMk(nMk + 30), className: "w-full text-sm text-blue-900 font-semibold py-2 border-t border-stone-100" }, "Ver mais mercados (" + (list.length - nMk) + ")"),
             mtH("div", { className: "text-[10px] text-stone-400 px-3 py-2" }, "Clientes = clientes da rota nesse mercado. " + (calc.prev ? (curOnly ? "▲▼ = ritmo do mês vs " : "▲▼ vs ") + prevLabel + ". " + "“Sem compra” = compraram em " + prevLabel + (curOnly ? " e ainda não este mês. " : " e não neste período. ") : "") + (focus.length ? "⭐ = clientes que compraram pelo menos um produto em foco. " : "") + "“SEM MERCADO” = clientes fora das rotas (distribuidores, corporate...).")),
         lostAll > 0 && mtH("div", { className: "text-[11px] text-stone-500 text-center" }, lostAll + " clientes " + (curOnly ? "ainda sem compra este mês" : "sem compra neste período") + " · toque num mercado para ver quem"),
         mtH("button", { onClick: exportX, className: "w-full bg-emerald-600 text-white rounded-lg py-3 font-semibold flex items-center justify-center gap-2 active:bg-emerald-700" }, mtH(Download, { size: 16 }), " Exportar vendas por mercado (Excel)"));

@@ -273,27 +273,31 @@ const firebaseConfig = {
 // Chave do reCAPTCHA v3 para o Firebase App Check (opcional). Vazio = desligado.
 const APP_CHECK_SITE_KEY = "";
 let db = null;
+let fbApp = null;
 try {
-    firebase.initializeApp(firebaseConfig);
+    // Nome próprio ("v12") desde a atualização da biblioteca Firebase (10 -> 12): a cópia offline dos
+    // dados fica numa base nova no telemóvel. Assim uma cópia antiga da app ainda aberta em segundo plano
+    // (que segura a base antiga) nunca bloqueia o arranque da versão nova.
+    fbApp = firebase.initializeApp(firebaseConfig, "v12");
     // Segurança (ver firestore.rules): cada telemóvel entra no Firebase com uma sessão anónima,
     // para que as regras possam recusar quem não usa a app. Se o "Anonymous" ainda não estiver
     // ativo no Firebase, a app continua a funcionar como antes.
     try {
-        if (APP_CHECK_SITE_KEY && firebase.appCheck) firebase.appCheck().activate(new firebase.appCheck.ReCaptchaV3Provider(APP_CHECK_SITE_KEY), true);
+        if (APP_CHECK_SITE_KEY && firebase.appCheck) fbApp.appCheck().activate(new firebase.appCheck.ReCaptchaV3Provider(APP_CHECK_SITE_KEY), true);
     }
     catch (e) { console.error("App Check init failed", e); }
     try {
-        const auth = firebase.auth();
+        const auth = fbApp.auth();
         auth.onAuthStateChanged((u) => {
             if (u) return;
             auth.signInAnonymously().then(() => {
                 // primeira entrada neste telemóvel: recarrega uma vez para que tudo seja lido já com sessão
-                try { if (!localStorage.getItem("anon_auth_ok")) { localStorage.setItem("anon_auth_ok", "1"); location.reload(); } } catch (e) { }
+                try { if (!localStorage.getItem("anon_auth_ok_v12")) { localStorage.setItem("anon_auth_ok_v12", "1"); location.reload(); } } catch (e) { }
             }).catch((e) => console.warn("Anonymous sign-in not available", e && e.code));
         });
     }
     catch (e) { console.error("Auth init failed", e); }
-    db = firebase.firestore();
+    db = fbApp.firestore();
     db.enablePersistence({ synchronizeTabs: true }).catch(() => { });
 }
 catch (e) {
@@ -302,7 +306,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-14-checkup-1";
+const APP_BUILD = "2026-11-14-checkup-2";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front

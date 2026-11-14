@@ -13,15 +13,14 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
 <link rel="shortcut icon" href="icon-192.png" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://cdn.tailwindcss.com/3.4.17"></script>
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-check-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore-compat.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   html, body, #root { height: 100%; margin: 0; background: #fafaf9; -webkit-tap-highlight-color: transparent; overscroll-behavior: none; touch-action: pan-y; overflow-x: hidden; max-width: 100vw; }
@@ -32,6 +31,8 @@
      padding (e.g. Tailwind pb-8) keep it, because Tailwind's rules load after this one. */
   .min-h-full { padding-bottom: max(36px, env(safe-area-inset-bottom, 0px)); }
 </style>
+<!-- Tailwind 3.4.17 pre-generated (was the live cdn.tailwindcss.com script): see tailwind.css header -->
+<link rel="stylesheet" href="tailwind.css?v=2026-11-14" />
 </head>
 <body>
 <div id="root"></div>
@@ -301,7 +302,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-10-29-mercados-canal-1";
+const APP_BUILD = "2026-11-14-checkup-1";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -423,6 +424,63 @@ async function fsGetDocFresh(path) {
 }
 function fsDeleteFieldValue() {
     return firebase.firestore.FieldValue.delete();
+}
+// ---- Listas grandes repartidas por vários documentos ----
+// Um documento do Firestore guarda no máximo 1 MiB. A lista de rotas (clients/current) e as tabelas das
+// metas (metas_sales / metas_forecast / metas_targets) crescem com a empresa; quando passam de ~700 KB são
+// gravadas em várias partes. Enquanto cabem num documento, tudo fica exatamente como antes (sem partes).
+const PART_TARGET_BYTES = 700000;
+const MAX_PARTS = 8;
+const BIG_LIST_LIMIT_BYTES = PART_TARGET_BYTES * MAX_PARTS;
+const jsonBytesEnc = new TextEncoder();
+function jsonBytes(x) { try { return jsonBytesEnc.encode(JSON.stringify(x)).length; } catch (e) { return 0; } }
+// divide uma lista em pedaços de no máximo ~PART_TARGET_BYTES cada (pela ordem original)
+function splitBySize(list, target) {
+    const parts = []; let cur = [], size = 0;
+    for (const it of list || []) {
+        const b = jsonBytes(it) + 1;
+        if (cur.length && size + b > target) { parts.push(cur); cur = []; size = 0; }
+        cur.push(it); size += b;
+    }
+    parts.push(cur);
+    return parts;
+}
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+// Lista de rotas: clients/current (+ clients/current_1, current_2, ... quando é grande).
+// Devolve { data: [todos os clientes], v } ou null. Lança erro se não conseguir ler (como antes).
+async function routesRead(source) {
+    const opt = source ? { source } : undefined;
+    for (let attempt = 0; ; attempt++) {
+        const s = await db.doc("clients/current").get(opt);
+        if (!s.exists) return null;
+        const d = s.data();
+        if (!d || !Array.isArray(d.data)) return null;
+        const n = Number(d.parts) || 1;
+        if (n <= 1) return d;
+        const rest = await Promise.all(Array.from({ length: n - 1 }, (_, i) => db.doc("clients/current_" + (i + 1)).get(opt)));
+        let all = d.data.slice(), ok = true;
+        for (const r of rest) {
+            const x = r.exists ? r.data() : null;
+            if (!x || !Array.isArray(x.data) || x.v !== d.v) { ok = false; break; }
+            all = all.concat(x.data);
+        }
+        if (ok) return Object.assign({}, d, { data: all });
+        // outra pessoa está a gravar a lista neste momento, ou a cópia do telemóvel está incompleta
+        if (source === "cache" || attempt >= 2) throw new Error("A lista de rotas está incompleta. Tente novamente.");
+        await sleepMs(1500);
+    }
+}
+// Grava a lista de rotas inteira. As partes extra são gravadas primeiro e o documento principal
+// por último, para que ninguém leia uma lista meio gravada.
+async function routesWrite(list, v) {
+    const parts = splitBySize(list, PART_TARGET_BYTES);
+    if (parts.length > MAX_PARTS) return false;
+    if (parts.length === 1) return fsSet("clients/current", v ? { data: list, v } : { data: list }, false);
+    if (!v) return false;
+    for (let i = 1; i < parts.length; i++) {
+        if (!(await fsSet("clients/current_" + i, { data: parts[i], v }, false))) return false;
+    }
+    return fsSet("clients/current", { data: parts[0], v, parts: parts.length }, false);
 }
 async function fsDeleteCollection(collectionName) {
     try {
@@ -1149,18 +1207,47 @@ function mtGuessCat(desc, fam, sub) {
 }
 // ---- storage (small in-memory cache on top of Firestore) ----
 const mtCache = {};
+// A table too big for one document is saved in parts: the main document keeps the first rows plus
+// "parts" (how many) and "pv" (a stamp); the other rows go to "<path>_p1", "<path>_p2", ... with the same stamp.
 async function mtGet(path, fresh) {
     if (!fresh && Object.prototype.hasOwnProperty.call(mtCache, path)) return mtCache[path];
-    const d = await fsGetDoc(path);
+    let d = await fsGetDoc(path);
+    const n = d ? Number(d.parts) || 1 : 1;
+    if (d && n > 1 && Array.isArray(d.rows)) {
+        let rows = null;
+        for (let attempt = 0; attempt < 3 && !rows; attempt++) {
+            if (attempt) { await sleepMs(1500); d = await fsGetDoc(path); if (!d || !(Number(d.parts) > 1)) break; }
+            const rest = await Promise.all(Array.from({ length: (Number(d.parts) || 1) - 1 }, (_, i) => fsGetDoc(path + "_p" + (i + 1))));
+            if (rest.every((x) => x && Array.isArray(x.rows) && x.pv === d.pv)) rows = d.rows.concat(...rest.map((x) => x.rows));
+        }
+        if (d && Number(d.parts) > 1) {
+            if (!rows) throw new Error("Dados incompletos (" + path + "). Verifique a internet e tente novamente.");
+            d = Object.assign({}, d, { rows });
+        }
+    }
     // Firestore cannot store arrays inside arrays, so table rows are saved as JSON strings.
     if (d && Array.isArray(d.rows)) d.rows = d.rows.map((r) => (typeof r === "string" ? JSON.parse(r) : r));
+    if (d) { delete d.parts; delete d.pv; }
     mtCache[path] = d;
     return d;
 }
 async function mtPut(path, data) {
     const stored = Array.isArray(data.rows) ? Object.assign({}, data, { rows: data.rows.map((r) => JSON.stringify(r)) }) : data;
-    if (payloadBytes(stored) > FIRESTORE_DOC_LIMIT_BYTES) throw new Error("Dados demasiado grandes para gravar (" + path + ", " + fmtKB(payloadBytes(stored)) + ").");
-    const ok = await fsSet(path, stored, false);
+    const total = payloadBytes(stored);
+    let ok;
+    if (total <= PART_TARGET_BYTES || !Array.isArray(stored.rows)) {
+        if (total > FIRESTORE_DOC_LIMIT_BYTES) throw new Error("Dados demasiado grandes para gravar (" + path + ", " + fmtKB(total) + ").");
+        ok = await fsSet(path, stored, false);
+    }
+    else {
+        const extra = payloadBytes(Object.assign({}, stored, { rows: [] }));
+        const parts = splitBySize(stored.rows, PART_TARGET_BYTES - extra);
+        if (parts.length > MAX_PARTS) throw new Error("Dados demasiado grandes para gravar (" + path + ", " + fmtKB(total) + ").");
+        const pv = String(Date.now());
+        ok = true;
+        for (let i = 1; i < parts.length && ok; i++) ok = await fsSet(path + "_p" + i, { rows: parts[i], pv }, false);
+        if (ok) ok = await fsSet(path, Object.assign({}, stored, { rows: parts[0], parts: parts.length, pv }), false);
+    }
     if (!ok) throw new Error("Não foi possível gravar no Firebase (" + path + "). Verifique a ligação e as regras do Firestore.");
     mtCache[path] = data;
 }
@@ -4069,11 +4156,11 @@ async function mtFlagClosed(c, kind, by) {
 async function mtClosedMap(fresh) { return (await mtTeamRaw(fresh))[MT_CLOSED_KEY] || {}; }
 async function mtRouteEdit(fn) {
     let server = [];
-    try { const s = await db.doc("clients/current").get({ source: "server" }); server = (s.exists && Array.isArray(s.data().data)) ? s.data().data : []; }
+    try { const d = await routesRead("server"); server = d ? d.data : []; }
     catch (e) { throw new Error("Sem ligação ao servidor. Tente outra vez com internet."); }
     const out = mtCompactList(fn(server.slice()));
     const v = String(Date.now());
-    let ok = await fsSet("clients/current", { data: out, v }, false);
+    let ok = await routesWrite(out, v);
     if (ok) await fsSet("settings/app", { routesVersion: v }, true);
     if (!ok) throw new Error("Não foi possível gravar no Firebase.");
 }
@@ -4157,7 +4244,7 @@ function mtCompactList(list) { return (list || []).map(mtCompactClient); }
 function mtCycleOf(weekLabel, old) { return weekLabel ? "2-Week (A/B)" : (old && !/^2-Week/.test(old) ? old : "1-Week (repeats weekly)"); }
 async function mtSaveRouteFromClientList(rowsIn) {
     let server = [];
-    try { const s = await db.doc("clients/current").get({ source: "server" }); server = (s.exists && Array.isArray(s.data().data)) ? s.data().data : []; }
+    try { const d = await routesRead("server"); server = d ? d.data : []; }
     catch (e) { throw new Error("Sem ligação ao servidor: as rotas não foram atualizadas (a lista de clientes foi gravada). Importe outra vez com internet."); }
     // the same client twice in the file: the last row wins (as in the client list)
     const byId = new Map();
@@ -4217,11 +4304,11 @@ async function mtSaveRouteFromClientList(rowsIn) {
     const keptOut = server.filter((c) => c.id && !inFile.has(mtCode(c.id)));
     const all = mtCompactList(out.concat(keptOut));
     const size = payloadBytes({ data: all });
-    if (size > FIRESTORE_DOC_LIMIT_BYTES) throw new Error("A lista de rotas tem " + all.length + " clientes (" + fmtKB(size) + "), acima do limite. As rotas não foram alteradas.");
+    if (size > BIG_LIST_LIMIT_BYTES) throw new Error("A lista de rotas tem " + all.length + " clientes (" + fmtKB(size) + "), acima do limite. As rotas não foram alteradas.");
     const v = String(Date.now());
-    let ok = await fsSet("clients/current", { data: all, v }, false);
+    let ok = await routesWrite(all, v);
     if (ok) await fsSet("settings/app", { routesVersion: v }, true);
-    else ok = await fsSet("clients/current", { data: all }, false);
+    else ok = await routesWrite(all, null);
     if (!ok) throw new Error("Não foi possível gravar as rotas no Firebase.");
     const people = new Set(out.map((c) => c.salespersonSlug)).size;
     return { n: out.length, withDay, placed, free: out.length - withDay, people, kept: keptOut.length };
@@ -4441,7 +4528,7 @@ function mtPlanOf(clients) {
 // spec: { slug: { MARKET: [days] } } — complete for each salesperson listed
 async function mtApplyPlan(spec) {
     let server = [];
-    try { const s = await db.doc("clients/current").get({ source: "server" }); server = (s.exists && Array.isArray(s.data().data)) ? s.data().data : []; }
+    try { const d = await routesRead("server"); server = d ? d.data : []; }
     catch (e) { throw new Error("Sem ligação ao servidor. Tente outra vez com internet."); }
     let out = server.map((c) => Object.assign({}, c));
     let kept = 0, moved = 0, freed = 0;
@@ -4454,11 +4541,11 @@ async function mtApplyPlan(spec) {
     });
     out = mtCompactList(out);
     const size = payloadBytes({ data: out });
-    if (size > FIRESTORE_DOC_LIMIT_BYTES) throw new Error("Lista demasiado grande (" + fmtKB(size) + "). Nada foi alterado.");
+    if (size > BIG_LIST_LIMIT_BYTES) throw new Error("Lista demasiado grande (" + fmtKB(size) + "). Nada foi alterado.");
     const v = String(Date.now());
-    let ok = await fsSet("clients/current", { data: out, v }, false);
+    let ok = await routesWrite(out, v);
     if (ok) await fsSet("settings/app", { routesVersion: v }, true);
-    else ok = await fsSet("clients/current", { data: out }, false);
+    else ok = await routesWrite(out, null);
     if (!ok) throw new Error("Não foi possível gravar no Firebase.");
     return { kept, moved, freed, people: Object.keys(spec).length };
 }
@@ -4639,7 +4726,7 @@ function MtChangeSeller() {
     const load = async () => {
         const [raw, sellers] = await Promise.all([mtTeamRaw(true), mtSellerChoices()]);
         const cust = raw[MT_CUST_KEY] || {}, prim = raw[MT_PRIM_KEY] || {};
-        let route = []; try { const s = await db.doc("clients/current").get(); route = (s.exists && s.data().data) || []; } catch (e) { }
+        let route = []; try { const d = await routesRead(); route = (d && d.data) || []; } catch (e) { }
         const r = {}; route.forEach((c) => { r[mtCode(c.id)] = c; });
         const list = Object.entries(cust).map(([id, sel]) => { const c = r[id] || {}; return { id, sel, name: c.name || "", market: c.market || "", phone: c.phone || "", prim: prim[id] || c.oldCode || "", ch: c.routeChannel || "" }; });
         setData({ list, sellers });
@@ -5033,7 +5120,7 @@ const ROUTE_CHANNELS = [["INFORMAL LUANDA", "Informal Luanda"], ["CASHVAN", "Cas
 // Firebase num ficheiro Excel legível + uma cópia completa em JSON. Os PINs de acesso não são incluídos.
 const EXPORT_COLLECTIONS = ["clients", "products", "settings", "visits", "sup_visits", "admin_visits", "orders", "metas_team", "metas_items", "metas_meta", "metas_targets", "metas_sales", "metas_forecast"];
 const EXPORT_PRIVATE_FIELDS = ["pins", "adminPin", "ownerPin"];
-const EXPORT_SINGLE_DOCS = { clients: ["current"], products: ["current"], settings: ["app", "empresa"], metas_meta: ["index"], metas_items: ["current"], metas_team: ["current"] };
+const EXPORT_SINGLE_DOCS = { clients: ["current", "current_1", "current_2", "current_3", "current_4", "current_5", "current_6", "current_7"], products: ["current"], settings: ["app", "empresa"], metas_meta: ["index"], metas_items: ["current"], metas_team: ["current"] };
 const EXPORT_SHEET_NAMES = { clients: "Clientes", products: "Produtos", settings: "Definicoes", visits: "Visitas vendedores", sup_visits: "Visitas supervisores", admin_visits: "Visitas administracao", orders: "Encomendas", metas_team: "Equipa", metas_items: "Artigos metas", metas_meta: "Metas indice", metas_targets: "Metas", metas_sales: "Vendas", metas_forecast: "Previsoes" };
 function exportCell(v) {
     if (v === null || v === undefined) return "";
@@ -5081,7 +5168,7 @@ function exportRowSheets(coll, docs) {
     const out = [];
     docs.forEach(({ id, data }) => {
         if (!Array.isArray(data.rows)) return;
-        const head = exportRowHeaders(coll, id);
+        const head = exportRowHeaders(coll, id.replace(/_p\d+$/, ""));
         const rows = data.rows.map((r) => {
             let a = r;
             if (typeof a === "string" && a[0] === "[") { try { a = JSON.parse(a); } catch (e) { } }
@@ -5193,6 +5280,8 @@ function EmpresaSettings() {
         try {
             const counts = await empresaExportAll((t) => setExp({ busy: true, text: t, err: false }));
             const total = counts.reduce((s, c) => s + c[1], 0);
+            // lembrete mensal de cópia de segurança (Administração): guarda a data desta exportação
+            fsSet("settings/app", { lastBackup: todayISO() }, true);
             setExp({ busy: false, err: false, text: "Concluído: " + total + " documentos exportados. Foram descarregados 2 ficheiros (Excel e JSON)." });
         }
         catch (e) { setExp({ busy: false, err: true, text: String(e.message || e) }); }
@@ -5399,6 +5488,7 @@ function RouteApp() {
     const [adminMsg, setAdminMsg] = useState(null);
     const [ownerPin, setOwnerPin] = useState(null);
     const [focusConfig, setFocusConfig] = useState(null);
+    const [lastBackup, setLastBackup] = useState(null);
     const [ownerAuthed, setOwnerAuthed] = useState(false);
     const [ownerField, setOwnerField] = useState("");
     const [ownerNewConfirmField, setOwnerNewConfirmField] = useState("");
@@ -5524,7 +5614,7 @@ function RouteApp() {
         catch (e) {
             // offline: keep what is on screen; if nothing yet, show the copy saved on this phone
             if (!gotServerClientsRef.current) {
-                const data = await fsGetDoc("clients/current");
+                let data = null; try { data = await routesRead(); } catch (x) { }
                 if (data && Array.isArray(data.data)) setClients(data.data);
             }
             return;
@@ -5539,8 +5629,7 @@ function RouteApp() {
             try { lastDay = localStorage.getItem(routesDayKey); } catch (e) { }
             if (lastDay === today) {
                 try {
-                    const c = await db.doc("clients/current").get({ source: "cache" });
-                    const d = c.exists ? c.data() : null;
+                    const d = await routesRead("cache");
                     if (d && d.v === sv && Array.isArray(d.data)) {
                         gotServerClientsRef.current = true;
                         clientsMetaRef.current = { v: sv, day: today };
@@ -5553,12 +5642,11 @@ function RouteApp() {
         }
         // 4) download the full route list from the server
         try {
-            const snap = await db.doc("clients/current").get({ source: "server" });
-            const data = snap.exists ? snap.data() : null;
+            const data = await routesRead("server");
             if (data && Array.isArray(data.data)) takeServerClients(data);
         }
         catch (e) {
-            const data = await fsGetDoc("clients/current");
+            let data = null; try { data = await routesRead(); } catch (x) { }
             if (data && Array.isArray(data.data) && !gotServerClientsRef.current)
                 setClients(data.data);
         }
@@ -5578,6 +5666,14 @@ function RouteApp() {
                 if (fromCache && gotServerClientsRef.current)
                     return;
                 const data = snap.exists ? snap.data() : null;
+                if (data && Number(data.parts) > 1) {
+                    // lista em várias partes: lê também as outras partes
+                    routesRead(fromCache ? undefined : "server").then((full) => {
+                        if (!full) return;
+                        if (!fromCache) takeServerClients(full); else setClients(full.data);
+                    }).catch((e) => console.error("routes parts read failed", e));
+                    return;
+                }
                 if (data && Array.isArray(data.data)) {
                     if (!fromCache) takeServerClients(data);
                     else setClients(data.data);
@@ -5664,6 +5760,7 @@ function RouteApp() {
             setAdminPin((data && data.adminPin) || null);
             setOwnerPin((data && data.ownerPin) || null);
             setFocusConfig((data && data.focusProducts) || null);
+            setLastBackup((data && data.lastBackup) || null);
             setWeekLabel((data && data.currentWeekLabel) || "Week A");
             const rv = (data && data.routesVersion) || null;
             routesVersionRef.current = rv;
@@ -6865,8 +6962,8 @@ function RouteApp() {
             // merge with the SERVER copy (never a possibly old copy kept on this phone)
             let serverClients = clients;
             try {
-                const snap = await db.doc("clients/current").get({ source: "server" });
-                serverClients = (snap.exists && Array.isArray(snap.data().data)) ? snap.data().data : [];
+                const d = await routesRead("server");
+                serverClients = d ? d.data : [];
             }
             catch (err) {
                 setImportMsg({ type: "error", text: "Sem ligação ao servidor. Para não misturar rotas antigas, a importação só é feita com internet. Tente novamente." });
@@ -6877,14 +6974,14 @@ function RouteApp() {
             const imported = mapped;
             mapped = others.concat(imported);
             const sizeBytes = payloadBytes({ data: mapped });
-            if (sizeBytes > FIRESTORE_DOC_LIMIT_BYTES) {
-                setImportMsg({ type: "error", text: `A lista tem ${mapped.length} clientes (${fmtKB(sizeBytes)}), o que excede o limite de armazenamento (~${fmtKB(FIRESTORE_DOC_LIMIT_BYTES)}). Nada foi alterado — divida o ficheiro ou contacte o programador.` });
+            if (sizeBytes > BIG_LIST_LIMIT_BYTES) {
+                setImportMsg({ type: "error", text: `A lista tem ${mapped.length} clientes (${fmtKB(sizeBytes)}), o que excede o limite de armazenamento (~${fmtKB(BIG_LIST_LIMIT_BYTES)}). Nada foi alterado — divida o ficheiro ou contacte o programador.` });
                 return;
             }
             const previousClients = clients;
             setClients(mapped);
             const newV = String(Date.now());
-            let saved = await fsSet("clients/current", { data: mapped, v: newV }, false);
+            let saved = await routesWrite(mapped, newV);
             if (saved) {
                 clientsMetaRef.current = { v: newV, day: todayISO() };
                 try { localStorage.setItem(routesDayKey, todayISO()); } catch (e) { }
@@ -6892,7 +6989,7 @@ function RouteApp() {
             }
             else {
                 // if the version field is ever refused, save the list exactly as before
-                saved = await fsSet("clients/current", { data: mapped }, false);
+                saved = await routesWrite(mapped, null);
                 if (saved) clientsMetaRef.current = { v: null, day: todayISO() };
             }
             if (!saved) {
@@ -6903,8 +7000,8 @@ function RouteApp() {
                 return;
             }
             const withCodes = imported.filter((c) => c.oldCode).length;
-            const nearLimit = sizeBytes > FIRESTORE_DOC_LIMIT_BYTES * 0.75;
-            setImportMsg({ type: "success", text: `${channelLabel}: importado com sucesso — ${imported.length} clientes carregados (${withCodes} com código antigo), substituindo os ${replacedCount} anteriores deste canal. Os outros canais não foram alterados. A atualizar em todos os telemóveis.` + (nearLimit ? ` Atenção: a lista já ocupa ${fmtKB(sizeBytes)} do limite de ~${fmtKB(FIRESTORE_DOC_LIMIT_BYTES)}.` : "") });
+            const nearLimit = sizeBytes > BIG_LIST_LIMIT_BYTES * 0.75;
+            setImportMsg({ type: "success", text: `${channelLabel}: importado com sucesso — ${imported.length} clientes carregados (${withCodes} com código antigo), substituindo os ${replacedCount} anteriores deste canal. Os outros canais não foram alterados. A atualizar em todos os telemóveis.` + (nearLimit ? ` Atenção: a lista já ocupa ${fmtKB(sizeBytes)} do limite de ~${fmtKB(BIG_LIST_LIMIT_BYTES)}.` : "") });
         }
         catch (err) {
             setImportMsg({ type: "error", text: "Erro ao ler o ficheiro. Confirme que é um .xlsx válido." });
@@ -7446,6 +7543,19 @@ function RouteApp() {
             React.createElement(BackHeader, { title: "Administra\u00E7\u00E3o", subtitle: "Repor PINs e gerir acessos", onBack: () => { setAdminAuthed(false); setScreen("home"); } }),
             React.createElement("div", { className: "p-4 flex flex-col gap-4" },
                 adminMsg && React.createElement("div", { className: "bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-lg p-3" }, adminMsg),
+                (() => {
+                    // Lembrete de cópia de segurança: aparece se nunca foi feita ou se já passaram 30 dias.
+                    if (!settingsLoaded) return null;
+                    const days = lastBackup ? Math.floor((Date.parse(todayISO()) - Date.parse(lastBackup)) / 86400000) : null;
+                    if (days !== null && days < 30) return null;
+                    return React.createElement("div", { className: "bg-amber-50 border border-amber-300 rounded-xl p-3 flex items-center gap-3" },
+                        React.createElement("div", { className: "flex-1 min-w-0" },
+                            React.createElement("div", { className: "text-sm font-bold text-amber-900" }, "C\u00F3pia de seguran\u00E7a"),
+                            React.createElement("div", { className: "text-xs text-amber-800 mt-0.5" }, days === null
+                                ? "Ainda n\u00E3o foi feita. Exporte todos os dados uma vez por m\u00EAs e guarde o ficheiro num lugar seguro."
+                                : "A \u00FAltima foi h\u00E1 " + days + " dias. Exporte todos os dados e guarde o ficheiro num lugar seguro.")),
+                        React.createElement("button", { onClick: () => setScreen("admin-empresa"), className: "shrink-0 bg-amber-500 text-stone-900 rounded-lg px-3 py-2 text-xs font-bold active:bg-amber-600" }, "Fazer agora"));
+                })(),
                 React.createElement(MtClosedReview, null),
                 React.createElement("div", { className: "flex gap-1.5 overflow-x-auto -mx-4 px-4 pb-1" }, CHANS.map(([k, l]) => React.createElement("button", { key: k, onClick: () => setAdminChan(k), className: `shrink-0 text-xs font-semibold px-3 py-1.5 rounded-full border ${adminChan === k ? "bg-blue-900 text-white border-blue-900" : "bg-white text-stone-600 border-stone-300"}` }, l + " \u00B7 " + chanCount(k)))),
                 React.createElement("div", { className: "bg-stone-900 rounded-2xl p-4 shadow-md text-white" },

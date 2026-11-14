@@ -19,10 +19,12 @@ service cloud.firestore {
         && request.resource.data.entries.size() <= 2000;
     }
     // the route list: "data" + its version number "v" (used to avoid re-downloading it)
+    // "parts" = in how many documents the list is split (clients/current, current_1, current_2, ...)
     function validListData() {
-      return request.resource.data.keys().hasOnly(['data', 'v'])
+      return request.resource.data.keys().hasOnly(['data', 'v', 'parts'])
         && request.resource.data.data is list
-        && (!('v' in request.resource.data) || request.resource.data.v is string);
+        && (!('v' in request.resource.data) || request.resource.data.v is string)
+        && (!('parts' in request.resource.data) || (request.resource.data.parts is int && request.resource.data.parts <= 8));
     }
     function validProductData() {
       return request.resource.data.keys().hasOnly(['data'])
@@ -38,11 +40,30 @@ service cloud.firestore {
       return isMonthId(id) || id == 'aging' || id == 'ful-index'
         || id.matches('^ful-[0-9]{4}-[0-9]{2}$') || id.matches('^(ful-)?cli-[0-9]{4}-[0-9]{2}$');
     }
+    // A table too big for one document is split: "<id>_p1", "<id>_p2", ... hold the extra rows
+    // ({rows, pv}); the main document keeps "parts" (how many) and "pv" (the same stamp).
+    function isPartId(id) {
+      return id.matches('^.+_p[1-7]$');
+    }
+    function basePartId(id) {
+      return id.split('_p')[0];
+    }
+    function validPartData() {
+      return request.resource.data.keys().hasOnly(['rows', 'pv'])
+        && request.resource.data.rows is list
+        && request.resource.data.pv is string;
+    }
 
     // ---- reference data: client list and product list (one doc each) ---
     match /clients/current {
       allow read: if app();
       allow create, update: if app() && validListData();
+      allow delete: if false;
+    }
+    // extra parts of the route list when it is too big for one document
+    match /clients/{part} {
+      allow read: if app() && part.matches('^current_[1-7]$');
+      allow create, update: if app() && part.matches('^current_[1-7]$') && validListData();
       allow delete: if false;
     }
     match /products/current {
@@ -70,15 +91,17 @@ service cloud.firestore {
         // 2-week (A/B) cycle - {supervisorName: "Week A"|"Week B"}. currentWeekLabel itself is
         // kept (above) only so existing/legacy data and any not-yet-updated client still works.
         && (!('weekLabelBySupervisor' in request.resource.data) || request.resource.data.weekLabelBySupervisor is map)
-        && (!('routesVersion' in request.resource.data) || request.resource.data.routesVersion is string);
+        && (!('routesVersion' in request.resource.data) || request.resource.data.routesVersion is string)
+        // date (YYYY-MM-DD) of the last "Exportar todos os dados" - for the monthly backup reminder
+        && (!('lastBackup' in request.resource.data) || request.resource.data.lastBackup is string);
     }
     match /settings/app {
       allow read: if app();
       allow create: if app()
-        && request.resource.data.keys().hasOnly(['pins', 'adminPin', 'ownerPin', 'currentWeekLabel', 'focusProducts', 'weekLabelBySupervisor', 'routesVersion'])
+        && request.resource.data.keys().hasOnly(['pins', 'adminPin', 'ownerPin', 'currentWeekLabel', 'focusProducts', 'weekLabelBySupervisor', 'routesVersion', 'lastBackup'])
         && validSettingsValues();
       allow update: if app()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pins', 'adminPin', 'ownerPin', 'currentWeekLabel', 'focusProducts', 'weekLabelBySupervisor', 'routesVersion'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pins', 'adminPin', 'ownerPin', 'currentWeekLabel', 'focusProducts', 'weekLabelBySupervisor', 'routesVersion', 'lastBackup'])
         && validSettingsValues();
       allow delete: if false;
     }
@@ -141,23 +164,29 @@ service cloud.firestore {
     }
     match /metas_sales/{m} {
       allow read: if app();
-      allow create, update: if app() && isSalesDocId(m)
-        && request.resource.data.keys().hasOnly(['rows', 'updated', 'file'])
-        && request.resource.data.rows is list;
+      allow create, update: if app() && (
+        (isSalesDocId(m)
+          && request.resource.data.keys().hasOnly(['rows', 'updated', 'file', 'parts', 'pv'])
+          && request.resource.data.rows is list)
+        || (isPartId(m) && isSalesDocId(basePartId(m)) && validPartData()));
       allow delete: if false;
     }
     match /metas_forecast/{m} {
       allow read: if app();
-      allow create, update: if app() && isMonthId(m)
-        && request.resource.data.keys().hasOnly(['rows', 'file', 'updated'])
-        && request.resource.data.rows is list;
+      allow create, update: if app() && (
+        (isMonthId(m)
+          && request.resource.data.keys().hasOnly(['rows', 'file', 'updated', 'parts', 'pv'])
+          && request.resource.data.rows is list)
+        || (isPartId(m) && isMonthId(basePartId(m)) && validPartData()));
       allow delete: if false;
     }
     match /metas_targets/{m} {
       allow read: if app();
-      allow create, update: if app() && isMonthId(m)
-        && request.resource.data.keys().hasOnly(['rows', 'histMonths', 'computed', 'notDistributed'])
-        && request.resource.data.rows is list;
+      allow create, update: if app() && (
+        (isMonthId(m)
+          && request.resource.data.keys().hasOnly(['rows', 'histMonths', 'computed', 'notDistributed', 'parts', 'pv'])
+          && request.resource.data.rows is list)
+        || (isPartId(m) && isMonthId(basePartId(m)) && validPartData()));
       allow delete: if false;
     }
 

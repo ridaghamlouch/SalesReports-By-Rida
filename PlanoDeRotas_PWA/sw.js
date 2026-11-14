@@ -1,5 +1,5 @@
-const CACHE_NAME = "plano-rotas-v5";
-const SHELL = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+const CACHE_NAME = "plano-rotas-v6";
+const SHELL = ["./", "./index.html", "./tailwind.css?v=2026-11-14", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

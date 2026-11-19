@@ -306,7 +306,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-19-product-search";
+const APP_BUILD = "2026-11-19-metas-month";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -1485,6 +1485,7 @@ function MetasView({ scope }) {
     const month = selMonths.length ? selMonths[selMonths.length - 1] : null;
     const setMonth = (m) => setSelMonths(m ? [m] : []);
     const [data, setData] = useState(null);
+    const [loadingData, setLoadingData] = useState(false);
     const [err, setErr] = useState(null);
     const [cats, setCats] = useState([]);
     const [subs, setSubs] = useState([]);
@@ -1513,7 +1514,8 @@ function MetasView({ scope }) {
     useEffect(() => {
         if (!monthsKey) return;
         let dead = false;
-        setData(null);
+        // keep showing the current numbers while the new months load, so an open month list stays open
+        setLoadingData(true);
         (async () => {
             try {
                 const ms = monthsKey.split(",");
@@ -1522,8 +1524,8 @@ function MetasView({ scope }) {
                 const targets = { rows: [].concat(...tds.map((d) => (d && d.rows) || [])) };
                 const ups = sds.map((d) => d && d.updated).filter(Boolean).sort();
                 const sales = { rows: [].concat(...sds.map((d) => (d && d.rows) || [])), updated: ups[ups.length - 1] };
-                if (!dead) setData({ items, team, targets, sales });
-            } catch (e) { if (!dead) setErr(String(e.message || e)); }
+                if (!dead) { setData({ items, team, targets, sales }); setLoadingData(false); }
+            } catch (e) { if (!dead) { setErr(String(e.message || e)); setLoadingData(false); } }
         })();
         return () => { dead = true; };
     }, [monthsKey]);
@@ -1598,7 +1600,7 @@ function MetasView({ scope }) {
                     : mtH(MtSelect, { label: "Categoria", value: cat, onChange: (v) => { setCats(v ? [v] : []); setSubs([]); }, options: [["", "Todas"], ...calc.cats.map((c) => [c, c])] })),
             multi ? mtH(MtMultiSelect, { label: "Subcategoria", values: subs, onChange: setSubs, allLabel: "Todas", options: calc.subs.map((x) => [x, x]) })
                 : mtH(MtSelect, { label: "Subcategoria", value: subs[0] || "", onChange: (v) => setSubs(v ? [v] : []), options: [["", "Todas"], ...calc.subs.map((x) => [x, x])] }),
-            mtH("div", { className: "text-[11px] text-stone-400" }, updated ? "Vendas atualizadas em " + new Date(updated).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "Ainda sem vendas deste mês")),
+            mtH("div", { className: "text-[11px] text-stone-400" }, loadingData ? "A atualizar..." : updated ? "Vendas atualizadas em " + new Date(updated).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "Ainda sem vendas deste mês")),
         path.length > 0 && mtH("div", { className: "flex flex-wrap items-center gap-1 text-xs" },
             mtH("button", { onClick: () => setPath([]), className: "px-2 py-1 rounded bg-white border border-stone-200 text-blue-900 font-semibold" }, "Início"),
             path.map((p, i) => mtH(React.Fragment, { key: i },

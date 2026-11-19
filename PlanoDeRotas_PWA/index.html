@@ -306,7 +306,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-19-primavera-search";
+const APP_BUILD = "2026-11-19-sup-cumprimento";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -3163,7 +3163,7 @@ function CompanySales() {
 }
 // ---- the header + view used for metas-only people (and managers / owner) ----
 // tabs as emoji tiles inside a black greeting card (same look as Admin / Direção)
-const MT_TAB_EMOJI = { rota: "\uD83D\uDCCD", rotas: "\uD83D\uDDD3\uFE0F", "equipa-rotas": "\uD83D\uDDD3\uFE0F", encomendas: "\uD83D\uDED2", metas: "\uD83C\uDFAF", dividas: "\uD83D\uDCB0", equipa: "\uD83D\uDC65", visitas: "\uD83D\uDCCD" };
+const MT_TAB_EMOJI = { rota: "\uD83D\uDCCD", rotas: "\uD83D\uDDD3\uFE0F", "equipa-rotas": "\uD83D\uDDD3\uFE0F", encomendas: "\uD83D\uDED2", metas: "\uD83C\uDFAF", dividas: "\uD83D\uDCB0", cumprimento: "\uD83D\uDCE6", equipa: "\uD83D\uDC65", visitas: "\uD83D\uDCCD" };
 function mtCardTiles(tabs, active, pick) {
     const n = tabs.length, cols = n >= 6 ? 3 : n, tight = cols >= 5;
     return mtH("div", { className: "border-t border-stone-700 mt-3 pt-3 grid gap-1.5", style: { gridTemplateColumns: "repeat(" + cols + ", minmax(0, 1fr))" } }, tabs.map((t) => {
@@ -3923,7 +3923,7 @@ function DebtsView({ scope }) {
 }
 // ---- Cumprimento: delivered vs invoiced (Admin / Direção) ----
 // ---- order search (Cumprimento): by sale order number, client code or client name, over all imported months ----
-function MtOrderSearch({ months, all, items }) {
+function MtOrderSearch({ months, all, items, sellerOk, noKz }) {
     const [q, setQ] = useState("");
     const [data, setData] = useState(null); // { orders: [...], oldMonths: [...] }
     const [loading, setLoading] = useState(false);
@@ -3962,9 +3962,10 @@ function MtOrderSearch({ months, all, items }) {
         const nq = norm(query), digits = /^\d+$/.test(query);
         // order number, SAP code, Primavera code (exact, or part of it when it has letters) or client name
         const primOk = (o) => { const pc = norm(prim[o.cust]); return !!pc && (pc === nq || (!digits && pc.includes(nq))); };
-        return data.orders.filter((o) => o.sno.includes(query) || primOk(o) || (digits ? o.cust === query : norm(o.name).includes(nq) || norm(o.cust) === nq))
+        const mine = (o) => !sellerOk || sellerOk(cust[o.cust] || o.fb || "");
+        return data.orders.filter((o) => mine(o) && (o.sno.includes(query) || primOk(o) || (digits ? o.cust === query : norm(o.name).includes(nq) || norm(o.cust) === nq)))
             .sort((a, b) => (b.sno.startsWith(query) - a.sno.startsWith(query)) || String(b.day).localeCompare(String(a.day)) || b.sno.localeCompare(a.sno));
-    }, [data, query]);
+    }, [data, query, cust, prim]);
     const dayTxt = (d) => String(d || "").split("-").reverse().join("/");
     const stateOf = (o) => {
         if (/NOT\s*YET|NAO\s*PROCESS|NÃO\s*PROCESS/i.test(o.st)) return ["Não processada (não conta)", "stone"];
@@ -3997,7 +3998,8 @@ function MtOrderSearch({ months, all, items }) {
                                 mtH("div", { className: "text-[10px] text-stone-400" }, (prim[o.cust] ? "Primavera " + prim[o.cust] + " · " : "") + "SAP " + o.cust + (seller ? " · " + seller : ""))),
                             mtH("span", { className: `shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded bg-${tn}-100 text-${tn}-700` }, st)),
                         o.old
-                            ? mtH("div", { className: "text-[10px] text-stone-500 mt-1" }, "Por faturar " + mtFmtKz(o.pkz) + " · " + mtFmt(o.pq) + " cx")
+                            ? mtH("div", { className: "text-[10px] text-stone-500 mt-1" }, "Por faturar " + (noKz ? "" : mtFmtKz(o.pkz) + " · ") + mtFmt(o.pq) + " cx")
+                            : noKz ? mtH("div", { className: "text-[10px] text-stone-500 mt-1" }, "Vendido " + mtFmt(o.sq) + " cx · Faturado " + mtFmt(o.iq) + " cx" + (o.sq - o.iq > 0.001 ? " · faltam " + mtFmt(o.sq - o.iq) + " cx" : "") + " · " + o.lines.length + (o.lines.length === 1 ? " produto" : " produtos"))
                             : mtH("div", { className: "text-[10px] text-stone-500 mt-1" }, "Vendas " + mtFmtKz(o.sv) + " · Faturado " + mtFmtKz(o.iv) + (due > 0.5 ? " · por faturar " + mtFmtKz(due) : "") + " · " + o.lines.length + (o.lines.length === 1 ? " produto" : " produtos"))),
                     isOpen && mtH("div", { className: "border-t border-stone-100 px-2 pb-2" },
                         o.old ? mtH("div", { className: "text-[11px] text-stone-400 pt-2" }, "Detalhe por produto não disponível: " + mtMonthLabel(o.m) + " foi importado antes desta versão. Importe de novo o Sales Fulfilment desse mês.") :
@@ -4008,7 +4010,7 @@ function MtOrderSearch({ months, all, items }) {
                                         mtH("div", { className: "text-[11px] font-semibold text-stone-800 leading-snug" }, (it && it.d) || l.code),
                                         mtH("div", { className: "text-[10px] text-stone-400" }, l.code + " · vendido " + mtFmt(l.sq) + " cx · faturado " + mtFmt(l.iq) + " cx")),
                                     mtH("div", { className: "text-right shrink-0" },
-                                        mtH("div", { className: "text-[11px] font-bold text-stone-700" }, mtFmtKz(l.sv)),
+                                        noKz ? null : mtH("div", { className: "text-[11px] font-bold text-stone-700" }, mtFmtKz(l.sv)),
                                         ld > 0.001 ? mtH("div", { className: "text-[10px] font-semibold text-rose-700" }, "faltam " + mtFmt(ld) + " cx") : mtH("div", { className: "text-[10px] text-emerald-700" }, "faturado")));
                             })));
             }),
@@ -4016,7 +4018,7 @@ function MtOrderSearch({ months, all, items }) {
             data.oldMonths.length > 0 && mtH("div", { className: "text-[10px] text-amber-700 bg-amber-50 rounded p-2" }, "⚠ " + data.oldMonths.map(mtMonthLabel).join(", ") + ": importado antes desta versão — só aparecem as encomendas por faturar. Importe de novo o Sales Fulfilment para procurar todas.")));
 }
 // ---- one product's fulfilment (Cumprimento -> tap a product) ----
-function MtProductFul({ code, calc, items, unit, F, onClose }) {
+function MtProductFul({ code, calc, items, unit, F, noKz, onClose }) {
     const [ord, setOrd] = useState(null); // { list: [...], old: [...] }
     const [lim, setLim] = useState(15);
     const it = items[code], name = (it && it.d) || code;
@@ -4094,18 +4096,20 @@ function MtProductFul({ code, calc, items, unit, F, onClose }) {
                                 mtH("div", { className: "text-[10px] text-stone-400" }, (c.prim ? "Primavera " + c.prim + " · " : "") + "SAP " + c.cust + (c.seller ? " · " + c.seller : ""))),
                             mtH("div", { className: "text-right shrink-0" },
                                 mtH("div", { className: "text-xs font-bold text-rose-700" }, "faltam " + mtFmt(c.q) + " cx"),
-                                mtH("div", { className: "text-[10px] text-stone-400" }, mtFmtKz(c.kz)))),
+                                noKz ? null : mtH("div", { className: "text-[10px] text-stone-400" }, mtFmtKz(c.kz)))),
                         mtH("div", { className: "text-[10px] text-stone-500 mt-0.5" }, c.orders.sort((a, b) => String(b.day).localeCompare(String(a.day))).map((o) => "Enc. " + o.sno + " (" + dayTxt(o.day) + ", " + mtFmt(o.q) + " cx)").join(" · ")))),
             ord && ord.list.length > lim && mtH("button", { onClick: () => setLim(lim + 30), className: "w-full text-sm text-blue-900 font-semibold py-1" }, "Ver mais"),
             ord && ord.old.length > 0 && mtH("div", { className: "text-[10px] text-amber-700 bg-amber-50 rounded p-2 mt-1" }, "⚠ " + ord.old.map(mtMonthLabel).join(", ") + ": importado antes da pesquisa de encomendas — clientes não disponíveis. Importe de novo o Sales Fulfilment desse mês.")));
 }
-function FulfilmentView() {
+// scope (optional): { kind: "sup", name, alias, memberSlugs } -> a supervisor sees only their team, in boxes only (no Kz)
+function FulfilmentView({ scope } = {}) {
+    const restricted = !!(scope && scope.kind && scope.kind !== "all");
     const [idx, setIdx] = useState(null);
     const [all, setAll] = useState(null); // { month: { agg: [...], pend: [...], updated } }
     const [items, setItems] = useState({});
     const [team, setTeam] = useState({});
     const [selMonths, setSelMonths] = useState([]);
-    const [unit, setUnit] = useState("kz");
+    const [unit, setUnit] = useState(restricted ? "cx" : "kz");
     const [path, setPath] = useState([]);
     const [cats, setCats] = useState([]);
     const [err, setErr] = useState(null);
@@ -4130,11 +4134,14 @@ function FulfilmentView() {
     }, []);
     const fieldOf = (seller, k) => (k === "seller" ? seller : ((team[seller] && team[seller][k]) || ""));
     const lastK = path.length ? path[path.length - 1].k : null;
-    const nextLevel = MT_LEVELS[lastK ? MT_LEVELS.findIndex(([k]) => k === lastK) + 1 : 0] || null;
+    const LV = restricted ? mtLevelsFor(scope.kind) : MT_LEVELS;
+    const nextLevel = LV[lastK ? LV.findIndex(([k]) => k === lastK) + 1 : 0] || null;
+    const inScope = (s) => !restricted || mtScopeMatch(scope, s, team);
+    const scopeKey = restricted ? JSON.stringify(scope) : "";
     const calc = useMemo(() => {
         if (!all || !selMonths.length) return null;
         const catSet = new Set(cats);
-        const sellerOk = (s) => path.every((p) => fieldOf(s, p.k) === p.val);
+        const sellerOk = (s) => inScope(s) && path.every((p) => fieldOf(s, p.k) === p.val);
         const pass = (r) => { const it = items[r[2]]; return sellerOk(r[1]) && (!catSet.size || catSet.has((it && it.c) || "SEM CATEGORIA")); };
         const V = (r) => unit === "kz" ? [r[4], r[6]] : unit === "t" ? [r[7], r[8]] : [r[3], r[5]];
         const sm = selMonths.filter((m) => all[m]).sort();
@@ -4153,7 +4160,7 @@ function FulfilmentView() {
         const catList = [...new Set(Object.values(items).map((i) => i.c))].sort();
         const ups = sm.map((m) => all[m].updated).filter(Boolean).sort();
         return { tot, totAll, byLevel, byCat, byProd, pend, catList, sm, updated: ups[ups.length - 1], rows, sellerOk };
-    }, [all, items, team, selMonths, path, cats, unit]);
+    }, [all, items, team, selMonths, path, cats, unit, scopeKey]);
     if (err) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-rose-50 border border-rose-200 text-rose-800 text-sm rounded-lg p-3" }, err));
     if (idx && !idx.length) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-4 text-sm text-stone-500 text-center" }, "Ainda não há relatório de cumprimento (Sales Fulfilment) importado."));
     if (!calc) return mtH("div", { className: "p-6 text-center text-stone-400 text-sm" }, "A carregar...");
@@ -4178,9 +4185,9 @@ function FulfilmentView() {
     const levelTitle = nextLevel ? { mgr: "Por gestor", ch: "Por canal", sup: "Por supervisor", seller: "Por vendedor" }[nextLevel[0]] : "";
     const pendBy = {};
     calc.pend.forEach((p) => { const o = pendBy[p[3]] || (pendBy[p[3]] = { cust: p[3], name: p[4], seller: p[5], kz: 0, q: 0, n: 0, last: "" }); o.kz += p[7]; o.q += p[6]; o.n++; if (p[2] > o.last) o.last = p[2]; });
-    const pendList = Object.values(pendBy).sort((a, b) => b.kz - a.kz);
+    const pendList = Object.values(pendBy).sort((a, b) => restricted ? b.q - a.q : b.kz - a.kz);
     return mtH("div", { className: "p-4 flex flex-col gap-3" },
-        mtH("div", { className: "flex bg-white border border-stone-200 rounded-xl p-1 gap-1" },
+        !restricted && mtH("div", { className: "flex bg-white border border-stone-200 rounded-xl p-1 gap-1" },
             [["kz", "Valor (Kz)"], ["t", "Toneladas"], ["cx", "Caixas"]].map(([k, l]) => mtH("button", { key: k, onClick: () => setUnit(k), className: `flex-1 py-2 rounded-lg text-sm font-semibold ${unit === k ? "bg-blue-900 text-white" : "text-stone-600"}` }, l))),
         mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
             mtH("div", { className: "flex gap-2" },
@@ -4193,7 +4200,7 @@ function FulfilmentView() {
                 mtH("span", { className: "text-stone-400" }, "›"),
                 mtH("button", { onClick: () => setPath(path.slice(0, i + 1)), className: `px-2 py-1 rounded border font-semibold ${i === path.length - 1 ? "bg-blue-900 text-white border-blue-900" : "bg-white border-stone-200 text-blue-900"}` }, (p.k === "ch" ? mtChannelLabel(p.val) : p.val) || "(sem nome)")))),
         mtH("div", { className: "bg-stone-900 text-white rounded-2xl p-4" },
-            mtH("div", { className: "text-stone-400 text-xs" }, calc.sm.map(mtMonthLabel).join(" + ") + (path.length ? " · " + (path[path.length - 1].k === "ch" ? mtChannelLabel(path[path.length - 1].val) : path[path.length - 1].val) : " · Toda a empresa")),
+            mtH("div", { className: "text-stone-400 text-xs" }, calc.sm.map(mtMonthLabel).join(" + ") + (path.length ? " · " + (path[path.length - 1].k === "ch" ? mtChannelLabel(path[path.length - 1].val) : path[path.length - 1].val) : restricted ? " · Equipa de " + scope.name : " · Toda a empresa")),
             mtH("div", { className: "flex items-end justify-between gap-2 mt-1" },
                 mtH("div", null, mtH("div", { className: "text-[10px] text-stone-400 uppercase tracking-wide font-semibold" }, "Faturado / Vendas"), mtH("div", { className: `text-3xl font-bold text-${tone(p0)}-400` }, p0.toLocaleString("pt-PT") + "%"))),
             mtH("div", { className: "grid grid-cols-3 gap-2 mt-3" },
@@ -4202,8 +4209,8 @@ function FulfilmentView() {
                     mtH("div", { className: "text-[12px] font-bold mt-0.5" }, unit === "kz" ? (v / 1e6).toLocaleString("pt-PT", { maximumFractionDigits: 1 }) + " M Kz" : F(v)))))),
         nextLevel && mtH(List, { title: levelTitle + (nextLevel[0] === "seller" ? "" : " · toque para abrir"), entries: Object.entries(calc.byLevel), label: (k) => (nextLevel[0] === "ch" ? mtChannelLabel(k) : k), onPick: (k) => k !== "(sem vendedor)" && setPath([...path, { k: nextLevel[0], val: k }]) }),
         cats.length !== 1 && mtH(List, { title: "Por categoria · toque para filtrar", entries: Object.entries(calc.byCat), label: (k) => k, onPick: (k) => setCats([k]) }),
-        mtH(MtOrderSearch, { months: idx, all, items }),
-        selProd && mtH(MtProductFul, { code: selProd, calc, items, unit, F, onClose: () => setSelProd(null) }),
+        mtH(MtOrderSearch, { months: idx, all, items, sellerOk: restricted ? inScope : null, noKz: restricted }),
+        selProd && mtH(MtProductFul, { code: selProd, calc, items, unit, F, noKz: restricted, onClose: () => setSelProd(null) }),
         (() => {
             const pq = mtNorm(prodQ).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
             const words = pq.split(" ").filter(Boolean);
@@ -4223,6 +4230,7 @@ function FulfilmentView() {
                     mtH("div", { className: "min-w-0" },
                         mtH("div", { className: "text-xs font-semibold text-stone-800 leading-snug" }, o.name || o.cust),
                         mtH("div", { className: "text-[10px] text-stone-400" }, "SAP " + o.cust + (o.seller ? " · " + o.seller : "") + " · " + o.n + (o.n === 1 ? " encomenda" : " encomendas") + " · última " + o.last.split("-").reverse().join("/"))),
+                    restricted ? mtH("div", { className: "text-right shrink-0 text-xs font-bold text-rose-700" }, mtFmt(o.q) + " cx") :
                     mtH("div", { className: "text-right shrink-0" },
                         mtH("div", { className: "text-xs font-bold text-rose-700" }, mtFmtKz(o.kz)),
                         mtH("div", { className: "text-[10px] text-stone-400" }, mtFmt(o.q) + " cx")))),
@@ -8926,6 +8934,7 @@ function RouteApp() {
             ...((!adminAuthed || isTestSession) ? [{ id: "encomendas", label: "Encomendas", Icon: ShoppingCart }] : []),
             { id: "metas", label: "Metas", Icon: BarChart2 },
             { id: "dividas", label: "Dívidas", Icon: Wallet },
+            { id: "cumprimento", label: "Cumprimento", Icon: Package },
         ];
         const effectiveSupTab = supTab === "relatorio" ? "relatorio" : (tabs.some((t) => t.id === supTab) ? supTab : "equipa");
         return (React.createElement("div", { className: "min-h-full bg-stone-100" },
@@ -9344,6 +9353,7 @@ function RouteApp() {
                 })(),
                 effectiveSupTab === "metas" && React.createElement(MetasWithRank, { scope: { kind: "sup", name: activeSupervisor, alias: metasAlias, memberSlugs: (pickRoster[activeSupervisor] || []).map((r) => r.slug) } }),
                 effectiveSupTab === "dividas" && React.createElement(DebtsView, { scope: { kind: "sup", name: activeSupervisor, alias: metasAlias, memberSlugs: (pickRoster[activeSupervisor] || []).map((r) => r.slug) } }),
+                effectiveSupTab === "cumprimento" && React.createElement(FulfilmentView, { scope: { kind: "sup", name: activeSupervisor, alias: metasAlias, memberSlugs: (pickRoster[activeSupervisor] || []).map((r) => r.slug) } }),
                 effectiveSupTab === "relatorio" && (React.createElement("div", { className: "p-4 flex flex-col gap-3" },
                     React.createElement("div", { className: "grid grid-cols-2 gap-2" },
                         React.createElement("div", { className: "bg-white rounded-xl border border-stone-200 p-4 text-center shadow-sm" },

@@ -306,7 +306,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-19-metas-month";
+const APP_BUILD = "2026-11-19-primavera-search";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -3931,13 +3931,14 @@ function MtOrderSearch({ months, all, items }) {
     const [open, setOpen] = useState(null);
     const [lim, setLim] = useState(20);
     const [cust, setCust] = useState({});
+    const [prim, setPrim] = useState({});
     const query = q.trim();
     useEffect(() => {
         if (data || loading || query.length < 2) return;
         let dead = false; setLoading(true);
         (async () => {
             try {
-                const [docs, cu] = await Promise.all([Promise.all(months.map((m) => mtGet("metas_sales/ful-ord-" + m, false).catch(() => null))), mtCustomers(false)]);
+                const [docs, cu, pr] = await Promise.all([Promise.all(months.map((m) => mtGet("metas_sales/ful-ord-" + m, false).catch(() => null))), mtCustomers(false), mtPrimavera(false).catch(() => ({}))]);
                 if (dead) return;
                 const orders = [], oldMonths = [];
                 months.forEach((m, k) => {
@@ -3949,7 +3950,7 @@ function MtOrderSearch({ months, all, items }) {
                         ((all[m] && all[m].pend) || []).forEach((p) => orders.push({ m, sno: String(p[1]), day: p[2], cust: p[3], name: p[4], fb: p[5], st: "", lines: [], sq: null, sv: null, iq: null, iv: null, pq: p[6], pkz: p[7], old: true }));
                     }
                 });
-                setCust(cu || {}); setData({ orders, oldMonths });
+                setCust(cu || {}); setPrim(Object.assign({}, mtRoutePrim(), pr || {})); setData({ orders, oldMonths });
             } catch (e) { if (!dead) setErr(String(e.message || e)); }
             finally { setLoading(false); }
         })();
@@ -3959,7 +3960,9 @@ function MtOrderSearch({ months, all, items }) {
     const res = useMemo(() => {
         if (!data || query.length < 2) return [];
         const nq = norm(query), digits = /^\d+$/.test(query);
-        return data.orders.filter((o) => o.sno.includes(query) || (digits ? o.cust === query : norm(o.name).includes(nq) || norm(o.cust) === nq))
+        // order number, SAP code, Primavera code (exact, or part of it when it has letters) or client name
+        const primOk = (o) => { const pc = norm(prim[o.cust]); return !!pc && (pc === nq || (!digits && pc.includes(nq))); };
+        return data.orders.filter((o) => o.sno.includes(query) || primOk(o) || (digits ? o.cust === query : norm(o.name).includes(nq) || norm(o.cust) === nq))
             .sort((a, b) => (b.sno.startsWith(query) - a.sno.startsWith(query)) || String(b.day).localeCompare(String(a.day)) || b.sno.localeCompare(a.sno));
     }, [data, query]);
     const dayTxt = (d) => String(d || "").split("-").reverse().join("/");
@@ -3974,7 +3977,7 @@ function MtOrderSearch({ months, all, items }) {
     return mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
         mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, "Procurar encomenda"),
         mtH("div", { className: "relative" },
-            mtH("input", { type: "search", value: q, onChange: (e) => { setQ(e.target.value); setOpen(null); setLim(20); }, placeholder: "Nº da encomenda, código ou nome do cliente", className: "w-full border border-stone-300 rounded-lg px-3 py-2 text-sm pr-8" }),
+            mtH("input", { type: "search", value: q, onChange: (e) => { setQ(e.target.value); setOpen(null); setLim(20); }, placeholder: "Nº da encomenda, código SAP/Primavera ou nome", className: "w-full border border-stone-300 rounded-lg px-3 py-2 text-sm pr-8" }),
             q && mtH("button", { onClick: () => { setQ(""); setOpen(null); }, className: "absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 text-lg leading-none px-1", "aria-label": "Limpar" }, "×")),
         query.length > 0 && query.length < 2 && mtH("div", { className: "text-[11px] text-stone-400" }, "Escreva pelo menos 2 caracteres."),
         err && mtH("div", { className: "text-xs text-rose-700" }, err),
@@ -3991,7 +3994,7 @@ function MtOrderSearch({ months, all, items }) {
                             mtH("div", { className: "min-w-0" },
                                 mtH("div", { className: "text-xs font-bold text-blue-900" }, "Enc. " + o.sno + " · " + dayTxt(o.day)),
                                 mtH("div", { className: "text-xs font-semibold text-stone-800 leading-snug" }, o.name || o.cust),
-                                mtH("div", { className: "text-[10px] text-stone-400" }, "SAP " + o.cust + (seller ? " · " + seller : ""))),
+                                mtH("div", { className: "text-[10px] text-stone-400" }, (prim[o.cust] ? "Primavera " + prim[o.cust] + " · " : "") + "SAP " + o.cust + (seller ? " · " + seller : ""))),
                             mtH("span", { className: `shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded bg-${tn}-100 text-${tn}-700` }, st)),
                         o.old
                             ? mtH("div", { className: "text-[10px] text-stone-500 mt-1" }, "Por faturar " + mtFmtKz(o.pkz) + " · " + mtFmt(o.pq) + " cx")
@@ -4021,7 +4024,8 @@ function MtProductFul({ code, calc, items, unit, F, onClose }) {
     useEffect(() => {
         let dead = false; setOrd(null); setLim(15);
         (async () => {
-            const [docs, cust] = await Promise.all([Promise.all(calc.sm.map((m) => mtGet("metas_sales/ful-ord-" + m, false).catch(() => null))), mtCustomers(false).catch(() => ({}))]);
+            const [docs, cust, pr] = await Promise.all([Promise.all(calc.sm.map((m) => mtGet("metas_sales/ful-ord-" + m, false).catch(() => null))), mtCustomers(false).catch(() => ({})), mtPrimavera(false).catch(() => ({}))]);
+            const prim = Object.assign({}, mtRoutePrim(), pr || {});
             if (dead) return;
             const by = {}, old = [];
             calc.sm.forEach((m, k) => {
@@ -4035,7 +4039,7 @@ function MtProductFul({ code, calc, items, unit, F, onClose }) {
                         if (l.code !== code) return;
                         const q = l.sq - l.iq, kz = l.sv - l.iv;
                         if (q <= 0.001 && kz <= 0.5) return;
-                        const c = by[o.cust] || (by[o.cust] = { cust: o.cust, name: o.name, seller, q: 0, kz: 0, orders: [] });
+                        const c = by[o.cust] || (by[o.cust] = { cust: o.cust, prim: prim[o.cust] || "", name: o.name, seller, q: 0, kz: 0, orders: [] });
                         c.q += q; c.kz += Math.max(0, kz); c.orders.push({ sno: o.sno, day: o.day, q });
                     });
                 });
@@ -4087,7 +4091,7 @@ function MtProductFul({ code, calc, items, unit, F, onClose }) {
                         mtH("div", { className: "flex justify-between gap-2" },
                             mtH("div", { className: "min-w-0" },
                                 mtH("div", { className: "text-xs font-semibold text-stone-800 leading-snug" }, c.name || c.cust),
-                                mtH("div", { className: "text-[10px] text-stone-400" }, "SAP " + c.cust + (c.seller ? " · " + c.seller : ""))),
+                                mtH("div", { className: "text-[10px] text-stone-400" }, (c.prim ? "Primavera " + c.prim + " · " : "") + "SAP " + c.cust + (c.seller ? " · " + c.seller : ""))),
                             mtH("div", { className: "text-right shrink-0" },
                                 mtH("div", { className: "text-xs font-bold text-rose-700" }, "faltam " + mtFmt(c.q) + " cx"),
                                 mtH("div", { className: "text-[10px] text-stone-400" }, mtFmtKz(c.kz)))),
@@ -4718,7 +4722,7 @@ function MtOtherClients({ clients, exclude, renderCard, skipId, title, startOpen
     const ex = useMemo(() => new Set((exclude || []).map((c) => c.id)), [exclude]);
     const list = useMemo(() => {
         const Q = q.trim().toLowerCase();
-        return clients.filter((c) => !ex.has(c.id) && c.id !== skipId && (!Q || String(c.name).toLowerCase().includes(Q) || String(c.market).toLowerCase().includes(Q) || String(c.oldCode || "").includes(Q) || String(c.id).includes(Q)));
+        return clients.filter((c) => !ex.has(c.id) && c.id !== skipId && (!Q || String(c.name).toLowerCase().includes(Q) || String(c.market).toLowerCase().includes(Q) || String(c.oldCode || "").toLowerCase().includes(Q) || String(c.id).includes(Q)));
     }, [clients, ex, q, skipId]);
     const groups = useMemo(() => { const g = {}; list.forEach((c) => { const m = mtMk(c.market); (g[m] = g[m] || []).push(c); }); return Object.keys(g).sort().map((m) => [m, g[m]]); }, [list]);
     if (!clients.length) return null;
@@ -6549,7 +6553,7 @@ function RouteApp() {
             teamClients = teamClients.filter((c) => c.market === spotMarketFilter);
         if (!q)
             return teamClients;
-        return teamClients.filter((c) => c.name.toLowerCase().includes(q) || c.market.toLowerCase().includes(q) || c.salesperson.toLowerCase().includes(q) || (c.oldCode || "").includes(q));
+        return teamClients.filter((c) => c.name.toLowerCase().includes(q) || c.market.toLowerCase().includes(q) || c.salesperson.toLowerCase().includes(q) || String(c.oldCode || "").toLowerCase().includes(q) || String(c.id || "").includes(q));
     }, [clientsForLookup, activeSupervisor, spotSearch, spotMarketFilter, mgrSlugs]);
     const spotTeamAll = useMemo(() => (activeSupervisor ? clientsForLookup.filter((c) => c.supervisor === activeSupervisor && !mgrSlugs[c.salespersonSlug]) : []), [clientsForLookup, activeSupervisor, mgrSlugs]);
     const [supWeek, setSupWeek] = useState({ key: "", ids: null });
@@ -6644,7 +6648,7 @@ function RouteApp() {
         if (!q)
             return base;
         const lc = (v) => String(v || "").toLowerCase();
-        return base.filter((c) => lc(c.name).includes(q) || lc(c.market).includes(q) || lc(c.salesperson).includes(q) || lc(c.supervisor).includes(q) || String(c.oldCode || "").includes(q) || String(c.id || "").includes(q));
+        return base.filter((c) => lc(c.name).includes(q) || lc(c.market).includes(q) || lc(c.salesperson).includes(q) || lc(c.supervisor).includes(q) || lc(c.oldCode).includes(q) || String(c.id || "").includes(q));
     }, [clients, adminVisitSearch, adminVisitMarketFilter]);
     const adminVisitGroups = useMemo(() => {
         const groups = {};
@@ -8292,7 +8296,7 @@ function RouteApp() {
                     const q = overdueSearch.trim().toLowerCase();
                     const filtered = overdue
                         .filter((o) => !ovMf || o.market === ovMf)
-                        .filter((o) => !q || o.client.toLowerCase().includes(q) || (o.oldCode || "").toLowerCase().includes(q));
+                        .filter((o) => !q || o.client.toLowerCase().includes(q) || String(o.oldCode || "").toLowerCase().includes(q) || String(o.clientId || "").includes(q));
                     if (overdue.length > 0 && filtered.length === 0) {
                         return React.createElement("div", { className: "text-center text-stone-400 text-sm py-6" }, "Nenhum cliente corresponde ao filtro.");
                     }
@@ -8808,7 +8812,7 @@ function RouteApp() {
                     }
                     const freeQuery = orderFreeSearch.trim().toLowerCase();
                     const freeResults = freeQuery
-                        ? orderableClients.filter((c) => c.name.toLowerCase().includes(freeQuery) || c.market.toLowerCase().includes(freeQuery) || (c.oldCode || "").includes(freeQuery))
+                        ? orderableClients.filter((c) => c.name.toLowerCase().includes(freeQuery) || c.market.toLowerCase().includes(freeQuery) || String(c.oldCode || "").toLowerCase().includes(freeQuery) || String(c.id || "").includes(freeQuery))
                         : [];
                     return (React.createElement("div", { className: "p-4 flex flex-col gap-3" },
                         React.createElement("div", { className: "flex gap-2 items-end" },
@@ -9265,7 +9269,7 @@ function RouteApp() {
                     }
                     const freeQuery = orderFreeSearch.trim().toLowerCase();
                     const freeResults = freeQuery
-                        ? orderableClients.filter((c) => c.name.toLowerCase().includes(freeQuery) || c.market.toLowerCase().includes(freeQuery) || (c.oldCode || "").includes(freeQuery))
+                        ? orderableClients.filter((c) => c.name.toLowerCase().includes(freeQuery) || c.market.toLowerCase().includes(freeQuery) || String(c.oldCode || "").toLowerCase().includes(freeQuery) || String(c.id || "").includes(freeQuery))
                         : [];
                     return (React.createElement("div", { className: "p-4 flex flex-col gap-3" },
                         React.createElement("div", { className: "flex gap-2 items-end" },

@@ -306,7 +306,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-19-sup-cumprimento";
+const APP_BUILD = "2026-11-19-mgr-cumprimento";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -3187,8 +3187,9 @@ function MetasHome({ scope, onBack }) {
                     mtH("div", { className: "text-2xl font-bold mt-0.5" }, scope.name),
                     mtH("div", { className: "mt-3 inline-flex items-center gap-2 bg-amber-500 text-stone-900 rounded-full px-3 py-1 text-xs font-bold" }, roleLabel + " · Metas de vendas"),
                     // Direção has its own "Dívidas de Clientes" button on its panel: no second Dívidas tab here
-                    scope.kind !== "all" && mtCardTiles([{ id: "metas", label: "Metas" }, { id: "dividas", label: "Dívidas" }], view, setView)))),
-        (view === "metas" || scope.kind === "all") ? mtH(MetasWithRank, { scope }) : mtH(DebtsView, { scope }));
+                    // channel managers (and supervisors) also get Cumprimento: own people only, boxes only
+                    scope.kind !== "all" && mtCardTiles([{ id: "metas", label: "Metas" }, { id: "dividas", label: "Dívidas" }].concat(scope.kind === "mgr" || scope.kind === "sup" ? [{ id: "cumprimento", label: "Cumprimento" }] : []), view, setView)))),
+        (view === "metas" || scope.kind === "all") ? mtH(MetasWithRank, { scope }) : view === "cumprimento" ? mtH(FulfilmentView, { scope }) : mtH(DebtsView, { scope }));
 }
 // ======================= DIREÇÃO: resumo (vendas, metas, dívidas, cumprimento) =======================
 // One black card with 4 tappable boxes + up to 3 automatic alerts. Reads the same documents as the reports.

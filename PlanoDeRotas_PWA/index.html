@@ -306,7 +306,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-23-meta-vs-encomendas";
+const APP_BUILD = "2026-11-23-rotas-equipa";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -4427,6 +4427,251 @@ function FulfilmentView({ scope } = {}) {
                         mtH("div", { className: "text-[10px] text-stone-400" }, mtFmt(o.q) + " cx")))),
             pendList.length > topP && mtH("button", { onClick: () => setTopP(topP + 50), className: "w-full text-sm text-blue-900 font-semibold py-2" }, "Ver mais")));
 }
+// ======================= RELATÓRIOS › ROTAS DA EQUIPA (Admin) =======================
+// Per salesperson: route compliance (planned clients/markets vs visited), working time, km (GPS), orders.
+// Per supervisor: checks done, salespeople checked, days without checks. Day / week / month.
+const MT_ROUTE_CACHE = {}; // "coll/date_slug" -> doc (past days only; today is always read again)
+const MT_TRACK_COLORS = ["#1e3a8a", "#e11d48", "#059669", "#d97706", "#7c3aed", "#0891b2", "#be185d", "#4d7c0f", "#b45309", "#334155", "#dc2626", "#2563eb"];
+function MtTeamMap({ tracks }) {
+    const ref = useRef(null), mapRef = useRef(null);
+    useEffect(() => {
+        if (!ref.current || typeof L === "undefined") return;
+        if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+        const all = [].concat(...tracks.map((t) => t.points.map((p) => [p.lat, p.lng])));
+        if (!all.length) return;
+        const map = L.map(ref.current, { zoomControl: true });
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "&copy; OpenStreetMap contributors", maxZoom: 19 }).addTo(map);
+        const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+        tracks.forEach((t) => {
+            if (!t.points.length) return;
+            L.polyline(t.points.map((p) => [p.lat, p.lng]), { color: t.color, weight: 3, opacity: 0.8 }).addTo(map);
+            t.points.forEach((p, i) => L.circleMarker([p.lat, p.lng], { radius: 5, color: "#fff", weight: 1.5, fillColor: t.color, fillOpacity: 1 }).addTo(map)
+                .bindPopup("<b>" + esc(t.name) + "</b><br/>" + (i + 1) + ". " + esc(p.label) + "<br/>" + esc(p.market) + (p.time ? " · " + esc(p.time) : "")));
+        });
+        if (all.length === 1) map.setView(all[0], 15); else map.fitBounds(L.latLngBounds(all), { padding: [25, 25] });
+        mapRef.current = map;
+        return () => { map.remove(); mapRef.current = null; };
+    }, [tracks]);
+    if (!tracks.some((t) => t.points.length)) return mtH("div", { className: "bg-stone-100 rounded-xl p-8 text-center text-stone-400 text-sm" }, "Sem visitas com localização neste dia.");
+    return mtH("div", { ref, style: { height: "420px", width: "100%", borderRadius: "12px", position: "relative", isolation: "isolate", zIndex: 0 } });
+}
+function MtRouteReport({ clients, roster, weekLabel, onMap }) {
+    const today = todayISO();
+    const [mode, setMode] = useState("d"); // d = dia, w = semana, m = mês
+    const [anchor, setAnchor] = useState(today);
+    const [team, setTeam] = useState(""); // "" = all supervisors
+    const [docs, setDocs] = useState(null);
+    const [prog, setProg] = useState(0);
+    const [openP, setOpenP] = useState([]);
+    const [showMap, setShowMap] = useState(false);
+    const sups = Object.keys(roster || {}).sort();
+    // period dates (Mon-Sat, never after today)
+    const period = useMemo(() => {
+        const d = new Date(anchor + "T00:00:00");
+        let from, to;
+        if (mode === "d") { from = to = new Date(d); }
+        else if (mode === "w") { from = new Date(d); from.setDate(d.getDate() - ((d.getDay() + 6) % 7)); to = new Date(from); to.setDate(from.getDate() + 5); }
+        else { from = new Date(d.getFullYear(), d.getMonth(), 1); to = new Date(d.getFullYear(), d.getMonth() + 1, 0); }
+        const out = [];
+        for (const x = new Date(from); x <= to; x.setDate(x.getDate() + 1)) { const iso = localDateISO(x); if (iso <= today && (mode === "d" || x.getDay() !== 0)) out.push(iso); }
+        return { dates: out, from: localDateISO(from), to: localDateISO(to) };
+    }, [mode, anchor, today]);
+    const move = (n) => { const d = new Date(anchor + "T00:00:00"); if (mode === "d") { d.setDate(d.getDate() + n); if (d.getDay() === 0) d.setDate(d.getDate() + n); } else if (mode === "w") d.setDate(d.getDate() + 7 * n); else d.setMonth(d.getMonth() + n, 1); const iso = localDateISO(d); setAnchor(iso > today ? today : iso); setOpenP([]); };
+    const people = useMemo(() => {
+        const out = [];
+        sups.filter((s) => !team || s === team).forEach((s) => { out.push({ kind: "sup", name: s, slug: slugify(s), sup: s }); (roster[s] || []).forEach((r) => out.push({ kind: "rep", name: r.name, slug: r.slug, sup: s })); });
+        return out;
+    }, [roster, team]);
+    useEffect(() => {
+        let dead = false;
+        setDocs(null); setProg(0);
+        const paths = [];
+        people.forEach((p) => period.dates.forEach((d) => paths.push((p.kind === "sup" ? "sup_visits/" : "visits/") + d + "_" + p.slug)));
+        let done = 0;
+        Promise.all(paths.map((path) => {
+            const isToday = path.indexOf("/" + today + "_") > 0;
+            if (!isToday && path in MT_ROUTE_CACHE) { done++; return Promise.resolve([path, MT_ROUTE_CACHE[path]]); }
+            return fsGetDoc(path).catch(() => null).then((d) => { if (!isToday) MT_ROUTE_CACHE[path] = d || null; done++; if (!dead && done % 25 === 0) setProg(Math.round(done / paths.length * 100)); return [path, d || null]; });
+        })).then((res) => { if (!dead) { const o = {}; res.forEach(([p, d]) => { o[p] = d; }); setDocs(o); } });
+        return () => { dead = true; };
+    }, [people, period, today]);
+    // week label (Week A / B) of a date: the current week has weekLabel, then it alternates
+    const wlOf = (iso) => {
+        const mon = (s) => { const d = new Date(s + "T00:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; };
+        const n = Math.round((mon(today) - mon(iso)) / (7 * 864e5));
+        return n % 2 === 0 ? weekLabel : (weekLabel === "Week A" ? "Week B" : "Week A");
+    };
+    const DAYS_EN = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const byId = useMemo(() => { const m = {}; (clients || []).forEach((c) => { m[c.id] = c; }); return m; }, [clients]);
+    const calc = useMemo(() => {
+        if (!docs) return null;
+        const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+        const minsOf = (ts) => { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); };
+        const dayStats = (p, date) => {
+            const doc = docs[(p.kind === "sup" ? "sup_visits/" : "visits/") + date + "_" + p.slug];
+            const ent = Object.entries((doc && doc.entries) || {});
+            const vis = ent.filter(([, r]) => (r.status || "visited") === "visited"), skp = ent.filter(([, r]) => r.status === "skipped");
+            const ts = vis.map(([, r]) => r.timestamp).filter(Boolean).sort();
+            const pts = vis.filter(([, r]) => r.gps && r.timestamp).sort((a, b) => a[1].timestamp.localeCompare(b[1].timestamp)).map(([id, r]) => ({ lat: r.gps.lat, lng: r.gps.lng, label: (byId[id] && byId[id].name) || id, market: (byId[id] && byId[id].market) || "", time: formatTimeLocal(r.timestamp) }));
+            const durs = vis.map(([, r]) => r.durationMinutes).filter((x) => x != null && x > 0 && x < 300);
+            const s = { date, n: vis.length, skipped: skp.length, km: pts.length > 1 ? totalRouteDistanceKm(pts) : 0, pts, first: ts[0] || null, last: ts[ts.length - 1] || null, durs, orders: vis.filter(([, r]) => r.order === "Sim" || r.orderTotal > 0).length, mkts: [...new Set(vis.map(([id]) => (byId[id] && byId[id].market) || "").filter(Boolean))] };
+            if (p.kind === "rep") {
+                const dn = DAYS_EN[new Date(date + "T00:00:00").getDay()];
+                const plan = mtRepDayClients(clients, p.name, dn, wlOf(date), null, null), pset = new Set(plan.map((c) => c.id));
+                s.planned = plan.length; s.planMkts = [...new Set(plan.map((c) => c.market))];
+                s.onPlan = vis.filter(([id]) => pset.has(id)).length; s.off = vis.length - s.onPlan;
+                s.skipPlan = skp.filter(([id]) => pset.has(id)).length;
+                s.rightMkt = s.planMkts.length ? s.mkts.some((m) => s.planMkts.includes(m)) : null;
+            } else {
+                const teamNames = new Set((roster[p.sup] || []).map((r) => r.name));
+                s.checked = [...new Set(vis.map(([id]) => byId[id] && byId[id].salesperson).filter((n) => n && teamNames.has(n)))];
+            }
+            return s;
+        };
+        const rows = people.map((p) => {
+            const days = period.dates.map((d) => dayStats(p, d));
+            const active = days.filter((d) => d.n + d.skipped > 0);
+            const hrs = active.filter((d) => d.first && d.last && d.last > d.first).map((d) => (new Date(d.last) - new Date(d.first)) / 36e5);
+            const o = { p, days, active: active.length, n: 0, skipped: 0, km: 0, orders: 0, durs: [], start: avg(active.filter((d) => d.first).map((d) => minsOf(d.first))), end: avg(active.filter((d) => d.last).map((d) => minsOf(d.last))), hours: avg(hrs) };
+            days.forEach((d) => { o.n += d.n; o.skipped += d.skipped; o.km += d.km; o.orders += d.orders; o.durs.push(...d.durs); });
+            o.minPer = avg(o.durs);
+            if (p.kind === "rep") {
+                o.planDays = days.filter((d) => d.planned > 0).length;
+                o.missed = days.filter((d) => d.planned > 0 && d.n + d.skipped === 0 && d.date < today).length;
+                o.planned = days.reduce((a, d) => a + (d.n + d.skipped > 0 || d.date < today ? d.planned : 0), 0);
+                o.onPlan = days.reduce((a, d) => a + d.onPlan, 0); o.off = days.reduce((a, d) => a + d.off, 0);
+                o.wrongMkt = days.filter((d) => d.rightMkt === false && d.n > 0).length;
+                o.cov = o.planned ? o.onPlan / o.planned * 100 : null;
+            } else {
+                o.workDays = days.filter((d) => d.date < today || d.n > 0).length;
+                o.noCheck = days.filter((d) => d.n === 0 && d.date < today).length;
+                const ch = new Set(); days.forEach((d) => d.checked.forEach((n) => ch.add(n)));
+                o.teamN = (roster[p.sup] || []).length; o.checked = [...ch]; o.unchecked = (roster[p.sup] || []).map((r) => r.name).filter((n) => !ch.has(n));
+            }
+            return o;
+        });
+        return { reps: rows.filter((r) => r.p.kind === "rep"), sups: rows.filter((r) => r.p.kind === "sup") };
+    }, [docs, people, period, clients, byId, weekLabel]);
+    const hm = (m) => (m == null ? "—" : String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(Math.round(m % 60)).padStart(2, "0"));
+    const tOf = (ts) => (ts ? formatTimeLocal(ts) : "—");
+    const h1 = (h) => (h == null ? "—" : h.toLocaleString("pt-PT", { maximumFractionDigits: 1 }) + " h");
+    const km = (k) => (k ? Math.round(k).toLocaleString("pt-PT") : "—");
+    const pcS = (p) => (p == null ? "—" : Math.round(p) + "%");
+    const tone = (p) => (p == null ? "text-stone-400" : p >= 90 ? "text-emerald-600" : p >= 70 ? "text-amber-600" : "text-rose-600");
+    const single = period.dates.length === 1;
+    const td = "px-2 py-1.5 text-right whitespace-nowrap";
+    const first = "sticky left-0 z-[1] px-2 py-1.5 text-left whitespace-nowrap max-w-[150px] truncate shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)]";
+    const toggle = (k) => setOpenP(openP.includes(k) ? openP.filter((x) => x !== k) : [...openP, k]);
+    const dayLbl = (iso) => { const d = new Date(iso + "T00:00:00"); return ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][d.getDay()] + " " + iso.slice(8, 10) + "/" + iso.slice(5, 7); };
+    const periodLbl = mode === "d" ? formatDatePT(anchor) : mode === "w" ? "Semana " + formatDatePT(period.from) + " a " + formatDatePT(period.to) : MT_MESES[+anchor.slice(5, 7) - 1] + " " + anchor.slice(0, 4);
+    const table = (heads, body) => mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "none", WebkitOverflowScrolling: "touch" } },
+        mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
+            mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" }, heads.map((h, i) => mtH("th", { key: i, className: (i ? td : first + " bg-blue-900") + " font-semibold" }, h)))),
+            mtH("tbody", null, ...body)));
+    const card = (title, sub, content) => mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
+        mtH("div", { className: "px-3 pt-3 pb-2" }, mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, title), sub && mtH("div", { className: "text-[10px] text-stone-400 mt-0.5" }, sub)), content);
+    const repCells = (o, cls, day) => [
+        mtH("td", { key: "a", className: td + " " + cls }, day ? (day.planMkts && day.planMkts.length ? day.planMkts.join(" / ") : "—") : o.active + (o.planDays ? "/" + o.planDays : "")),
+        mtH("td", { key: "b", className: td + " " + cls }, (day ? day.planned : o.planned) || "—"),
+        mtH("td", { key: "c", className: td + " " + cls }, day ? day.onPlan : o.onPlan),
+        mtH("td", { key: "d", className: td + " font-bold " + cls + " " + tone(day ? (day.planned ? day.onPlan / day.planned * 100 : null) : o.cov) }, pcS(day ? (day.planned ? day.onPlan / day.planned * 100 : null) : o.cov)),
+        mtH("td", { key: "e", className: td + " " + cls + ((day ? day.off : o.off) ? " text-amber-700" : "") }, (day ? day.off : o.off) || "—"),
+        mtH("td", { key: "f", className: td + " " + cls }, (day ? day.skipped : o.skipped) || "—"),
+        mtH("td", { key: "g", className: td + " " + cls }, day ? tOf(day.first) : hm(o.start)),
+        mtH("td", { key: "h", className: td + " " + cls }, day ? tOf(day.last) : hm(o.end)),
+        mtH("td", { key: "i", className: td + " " + cls }, h1(day ? (day.first && day.last && day.last > day.first ? (new Date(day.last) - new Date(day.first)) / 36e5 : null) : o.hours)),
+        mtH("td", { key: "j", className: td + " " + cls }, (() => { const a = day ? day.durs : o.durs; return a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) + " min" : "—"; })()),
+        mtH("td", { key: "k", className: td + " " + cls }, km(day ? day.km : o.km)),
+        mtH("td", { key: "l", className: td + " " + cls }, (day ? day.orders : o.orders) || "—"),
+        mtH("td", { key: "m", className: td + " " + cls + (day && day.rightMkt === false && day.n > 0 ? " text-rose-600 font-semibold" : day && day.n + day.skipped === 0 && day.planned > 0 && day.date < today ? " text-rose-600 font-semibold" : "") },
+            day ? (day.n + day.skipped === 0 ? (day.planned > 0 && day.date < today ? "sem registo" : "") : day.rightMkt === false ? "mercado errado" : day.mkts.join(" / ")) : [o.missed ? o.missed + " dia(s) sem registo" : "", o.wrongMkt ? o.wrongMkt + " mercado errado" : ""].filter(Boolean).join(" · ") || "—")];
+    const repBody = [];
+    if (calc) {
+        let lastSup = null;
+        calc.reps.slice().sort((a, b) => a.p.sup.localeCompare(b.p.sup) || (b.cov || 0) - (a.cov || 0)).forEach((o) => {
+            if (!team && o.p.sup !== lastSup) { lastSup = o.p.sup; repBody.push(mtH("tr", { key: "s_" + o.p.sup }, mtH("td", { colSpan: 14, className: "px-2 py-1 bg-stone-100 text-[10px] font-bold text-stone-500 uppercase tracking-wide border-t border-stone-200" }, "Equipa " + o.p.sup))); }
+            const k = "r" + o.p.slug, isOpen = !single && openP.includes(k);
+            repBody.push(mtH("tr", { key: k, onClick: single ? (() => onMap && onMap({ kind: "visits", slug: o.p.slug, name: o.p.name, back: "admin-reports" }, period.dates[0])) : () => toggle(k), className: "cursor-pointer font-semibold text-stone-900" },
+                mtH("td", { className: first + " bg-white border-t border-stone-200" }, mtH("span", { className: "text-blue-600" }, single ? "🗺️ " : isOpen ? "▾ " : "▸ "), o.p.name), ...repCells(o, "bg-white border-t border-stone-200", single ? o.days[0] : null)));
+            if (isOpen) o.days.forEach((d) => repBody.push(mtH("tr", { key: k + d.date, onClick: () => onMap && onMap({ kind: "visits", slug: o.p.slug, name: o.p.name, back: "admin-reports" }, d.date), className: "cursor-pointer text-stone-600" },
+                mtH("td", { className: first + " bg-slate-50 pl-5" }, "🗺️ " + dayLbl(d.date)), ...repCells(o, "bg-slate-50", d))));
+        });
+    }
+    const supBody = [];
+    if (calc) calc.sups.forEach((o) => {
+        const k = "s" + o.p.slug, isOpen = openP.includes(k);
+        const cells = (d, cls) => [
+            mtH("td", { key: "a", className: td + " " + cls }, d ? (d.n ? "✔" : d.date < today ? "✖" : "") : (o.workDays - o.noCheck) + "/" + o.workDays),
+            mtH("td", { key: "b", className: td + " " + cls }, (d ? d.n : o.n) || "—"),
+            mtH("td", { key: "c", className: td + " font-bold " + cls + " " + (d ? "" : tone(o.teamN ? o.checked.length / o.teamN * 100 : null)) }, d ? (d.checked.length ? d.checked.length : "—") : o.checked.length + "/" + o.teamN),
+            mtH("td", { key: "d", className: td + " " + cls }, d ? tOf(d.first) : hm(o.start)),
+            mtH("td", { key: "e", className: td + " " + cls }, d ? tOf(d.last) : hm(o.end)),
+            mtH("td", { key: "f", className: td + " " + cls }, h1(d ? (d.first && d.last && d.last > d.first ? (new Date(d.last) - new Date(d.first)) / 36e5 : null) : o.hours)),
+            mtH("td", { key: "g", className: td + " " + cls }, km(d ? d.km : o.km)),
+            mtH("td", { key: "h", className: td + " " + cls }, (d ? d.orders : o.orders) || "—"),
+            mtH("td", { key: "i", className: td + " " + cls + (!d && o.noCheck ? " text-rose-600 font-semibold" : "") }, d ? d.checked.join(", ") : (o.noCheck ? o.noCheck + " dia(s) sem verificação" : "—"))];
+        supBody.push(mtH("tr", { key: k, onClick: () => toggle(k), className: "cursor-pointer font-semibold text-stone-900" },
+            mtH("td", { className: first + " bg-white border-t border-stone-200" }, mtH("span", { className: "text-blue-600" }, isOpen ? "▾ " : "▸ "), o.p.name), ...cells(null, "bg-white border-t border-stone-200")));
+        if (isOpen) {
+            if (o.unchecked.length) supBody.push(mtH("tr", { key: k + "_u" }, mtH("td", { colSpan: 10, className: "px-3 py-1.5 bg-rose-50 text-[10.5px] text-rose-800 whitespace-normal" }, "Não verificados no período: " + o.unchecked.join(", "))));
+            o.days.forEach((d) => supBody.push(mtH("tr", { key: k + d.date, onClick: () => onMap && onMap({ kind: "sup_visits", slug: o.p.slug, name: o.p.name, back: "admin-reports" }, d.date), className: "cursor-pointer text-stone-600" },
+                mtH("td", { className: first + " bg-slate-50 pl-5" }, "🗺️ " + dayLbl(d.date)), ...cells(d, "bg-slate-50"))));
+        }
+    });
+    const exportX = () => {
+        if (!calc) return;
+        const t = (ts) => (ts ? formatTimeLocal(ts) : ""), hh = (d) => (d.first && d.last && d.last > d.first ? Math.round((new Date(d.last) - new Date(d.first)) / 36e5 * 10) / 10 : "");
+        const a1 = [["Equipa", "Vendedor", "Data", "Mercado planeado", "Clientes planeados", "Visitados da rota", "Cobertura %", "Fora da rota", "Não visitados", "Início", "Fim", "Horas", "Min/visita", "Km", "Pedidos", "Mercados visitados", "Nota"]];
+        calc.reps.forEach((o) => o.days.forEach((d) => a1.push([o.p.sup, o.p.name, formatDatePT(d.date), (d.planMkts || []).join(" / "), d.planned, d.onPlan, d.planned ? Math.round(d.onPlan / d.planned * 100) : "", d.off, d.skipped, t(d.first), t(d.last), hh(d), d.durs.length ? Math.round(d.durs.reduce((x, y) => x + y, 0) / d.durs.length) : "", Math.round(d.km * 10) / 10, d.orders, d.mkts.join(" / "), d.n + d.skipped === 0 ? (d.planned > 0 && d.date < today ? "Sem registo" : "") : d.rightMkt === false ? "Mercado errado" : ""])));
+        const a2 = [["Supervisor", "Data", "Visitas", "Vendedores verificados", "Início", "Fim", "Horas", "Km", "Pedidos"]];
+        calc.sups.forEach((o) => o.days.forEach((d) => a2.push([o.p.name, formatDatePT(d.date), d.n, d.checked.join(", "), t(d.first), t(d.last), hh(d), Math.round(d.km * 10) / 10, d.orders])));
+        const a3 = [["Supervisor", "Dias com verificação", "Dias úteis", "Visitas", "Vendedores verificados", "Vendedores na equipa", "Não verificados"]];
+        calc.sups.forEach((o) => a3.push([o.p.name, o.workDays - o.noCheck, o.workDays, o.n, o.checked.length, o.teamN, o.unchecked.join(", ")]));
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a1), "Vendedores");
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a2), "Supervisores por dia");
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a3), "Supervisores resumo");
+        XLSX.writeFile(wb, "Rotas_" + period.from + "_" + period.to + ".xlsx");
+    };
+    const tot = calc && (() => { const r = calc.reps, pl = r.reduce((a, o) => a + o.planned, 0), on = r.reduce((a, o) => a + o.onPlan, 0); return { pl, on, cov: pl ? on / pl * 100 : null, off: r.reduce((a, o) => a + o.off, 0), km: r.reduce((a, o) => a + o.km, 0), missed: r.reduce((a, o) => a + o.missed, 0), noCheck: calc.sups.reduce((a, o) => a + o.noCheck, 0), supN: calc.sups.reduce((a, o) => a + o.n, 0) }; })();
+    const tracks = calc && single ? calc.reps.map((o, i) => ({ name: o.p.name, color: MT_TRACK_COLORS[i % MT_TRACK_COLORS.length], points: o.days[0].pts })).concat(calc.sups.map((o) => ({ name: o.p.name + " (sup.)", color: "#000000", points: o.days[0].pts }))).filter((t) => t.points.length) : [];
+    return mtH("div", { className: "p-4 flex flex-col gap-3" },
+        mtH("div", { className: "flex bg-white border border-stone-200 rounded-xl p-1 gap-1" },
+            [["d", "Dia"], ["w", "Semana"], ["m", "Mês"]].map(([k, l]) => mtH("button", { key: k, onClick: () => { setMode(k); setOpenP([]); setShowMap(false); }, className: `flex-1 py-2 rounded-lg text-sm font-semibold ${mode === k ? "bg-blue-900 text-white" : "text-stone-600"}` }, l))),
+        mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
+            mtH("div", { className: "flex items-center gap-2" },
+                mtH("button", { onClick: () => move(-1), className: "px-3 py-1.5 rounded-lg border border-stone-300 text-sm font-bold text-stone-600 active:bg-stone-100" }, "◀"),
+                mtH("div", { className: "flex-1 text-center text-sm font-semibold text-stone-800" }, periodLbl),
+                mtH("button", { onClick: () => move(1), disabled: period.to >= today, className: "px-3 py-1.5 rounded-lg border border-stone-300 text-sm font-bold text-stone-600 active:bg-stone-100 disabled:opacity-50" }, "▶")),
+            mtH("input", { type: "date", value: anchor, max: today, onChange: (e) => { if (e.target.value) { setAnchor(e.target.value); setOpenP([]); } }, className: "w-full border border-stone-300 rounded-lg p-2 text-sm bg-white" }),
+            mtH("select", { value: team, onChange: (e) => { setTeam(e.target.value); setOpenP([]); }, className: "w-full border border-stone-300 rounded-lg p-2 text-sm bg-white" },
+                mtH("option", { value: "" }, "Todas as equipas"), sups.map((s) => mtH("option", { key: s, value: s }, "Equipa " + s)))),
+        !calc ? mtH("div", { className: "p-6 text-center text-stone-400 text-sm" }, "A carregar visitas" + (prog ? "... " + prog + "%" : "...")) : mtH(React.Fragment, null,
+            mtH("div", { className: "bg-stone-900 text-white rounded-2xl p-4" },
+                mtH("div", { className: "text-stone-400 text-xs" }, periodLbl + " · " + (team ? "Equipa " + team : "Todas as equipas")),
+                mtH("div", { className: "grid grid-cols-3 gap-2 mt-2" },
+                    [["Cobertura da rota", pcS(tot.cov), tot.cov == null ? "text-stone-300" : tot.cov >= 90 ? "text-emerald-400" : tot.cov >= 70 ? "text-amber-400" : "text-rose-400", tot.on + " de " + tot.pl + " clientes"],
+                        ["Fora da rota", String(tot.off), "text-amber-400", "visitas"],
+                        ["Km percorridos", km(tot.km), "text-white", "vendedores (GPS)"],
+                        ["Dias sem registo", String(tot.missed), tot.missed ? "text-rose-400" : "text-emerald-400", "vendedores"],
+                        ["Verificações", String(tot.supN), "text-white", "visitas de supervisores"],
+                        ["Dias sem verificação", String(tot.noCheck), tot.noCheck ? "text-rose-400" : "text-emerald-400", "supervisores"]].map(([l, v, c, s]) => mtH("div", { key: l, className: "bg-stone-800 rounded-xl p-2" },
+                        mtH("div", { className: "text-[9px] text-stone-400 uppercase tracking-wide font-semibold leading-tight" }, l),
+                        mtH("div", { className: "text-lg font-bold " + c }, v),
+                        mtH("div", { className: "text-[10px] text-stone-400 leading-tight" }, s))))),
+            mtH("div", { className: "flex gap-2" },
+                single && mtH("button", { onClick: () => setShowMap(!showMap), className: "flex-1 text-sm font-semibold rounded-lg py-2 border " + (showMap ? "bg-blue-900 text-white border-blue-900" : "bg-white text-blue-900 border-blue-900") }, "🗺️ Mapa da equipa"),
+                mtH("button", { onClick: exportX, className: "flex-1 text-sm font-semibold text-emerald-700 border border-emerald-600 rounded-lg py-2 bg-white active:bg-emerald-50" }, "⬇ Excel")),
+            single && showMap && mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-2 flex flex-col gap-2" },
+                mtH(MtTeamMap, { tracks }),
+                mtH("div", { className: "flex flex-wrap gap-x-3 gap-y-0.5 px-1" }, tracks.map((t) => mtH("span", { key: t.name, className: "text-[10.5px] text-stone-600" }, mtH("span", { style: { color: t.color } }, "● "), t.name + " · " + km(totalRouteDistanceKm(t.points)) + " km")))),
+            card("Vendedores", single ? "Toque num vendedor para ver o mapa da rota." : "Toque num vendedor para ver os dias; toque num dia para ver o mapa.",
+                table(["Vendedor", single ? "Mercado planeado" : "Dias ativos", "Planeados", "Visitados", "Cobertura", "Fora rota", "Não visit.", single ? "Início" : "Início méd.", single ? "Fim" : "Fim méd.", single ? "Horas" : "Horas/dia", "Min/visita", "Km", "Pedidos", "Notas"], repBody)),
+            card("Supervisores", "Verificações = visitas dos supervisores aos clientes da equipa. Toque para ver os dias e quem não foi verificado.",
+                table(["Supervisor", "Dias c/ verif.", "Visitas", "Vendedores verif.", single ? "Início" : "Início méd.", single ? "Fim" : "Fim méd.", single ? "Horas" : "Horas/dia", "Km", "Pedidos", single ? "Vendedores verificados" : "Notas"], supBody)),
+            mtH("div", { className: "text-[10px] text-stone-400 px-1 leading-snug" },
+                "Cobertura = clientes da rota do dia visitados / clientes planeados. Fora da rota = visitas a clientes que não eram desse dia. Horas = da primeira à última visita. Km = distância em linha reta entre visitas com GPS (a real é maior). Semana A/B dos dias passados calculada a partir da semana atual (" + weekLabel + ").")));
+}
 // ======================= META vs ENCOMENDADO vs FATURADO (Admin / Direção) =======================
 // Shows whether a gap to the target comes from sales (not ordered) or from fulfilment (ordered but not invoiced).
 // Meta = metas_targets (forecast split per salesperson, boxes); Encomendado / Faturado = Sales Fulfilment (ful-YYYY-MM).
@@ -7478,6 +7723,7 @@ function RouteApp() {
                 setScreen(adminAuthed ? "admin-panel" : (remembered ? "home" : "sup-pick"));
                 break;
             case "route-map":
+                if (mapContext && mapContext.back) { setScreen(mapContext.back); break; }
                 setScreen((mapContext === null || mapContext === void 0 ? void 0 : mapContext.kind) === "sup_visits" ? "admin-sup-visits" : (mapContext === null || mapContext === void 0 ? void 0 : mapContext.kind) === "admin_visits" ? "admin-my-visits" : (adminAuthed ? "admin-rep-visits" : (activeRep ? "rep-dash" : "sup-dash")));
                 break;
             default: break;
@@ -8594,6 +8840,7 @@ function RouteApp() {
             { id: "dividas", label: "Dívidas de Clientes" },
             { id: "cumprimento", label: "Cumprimento" },
             { id: "metavs", label: "\uD83C\uDFAF Meta vs Encomendas" },
+            { id: "rotas", label: "\uD83D\uDDFA\uFE0F Rotas da Equipa" },
             { id: "atraso", label: "Clientes em Atraso" },
             { id: "encomendas", label: "Todas as Encomendas" },
             { id: "foco", label: "⭐ Produtos Foco" },
@@ -8840,6 +9087,7 @@ function RouteApp() {
             activeAdminReportTab === "dividas" && React.createElement(DebtsView, { scope: { kind: "all", name: "Administração" } }),
             activeAdminReportTab === "cumprimento" && React.createElement(FulfilmentView, null),
             activeAdminReportTab === "metavs" && React.createElement(MtMetaVsFul, null),
+            activeAdminReportTab === "rotas" && React.createElement(MtRouteReport, { clients, roster: usedRoster, weekLabel, onMap: openRouteMap }),
             activeAdminReportTab === "atraso" && renderAtraso(),
             activeAdminReportTab === "encomendas" && renderEncomendas(),
             activeAdminReportTab === "foco" && React.createElement(MtFocusReport, { clients, people: (() => { const seen = {}, out = []; const push = (p) => { const k = p.coll + "|" + p.slug; if (!p.slug || seen[k]) return; seen[k] = 1; out.push(p); }; Object.entries(usedRoster).forEach(([sup, reps]) => { reps.forEach((r) => push({ coll: "visits", slug: r.slug, name: r.name, role: "rep" })); push({ coll: "sup_visits", slug: slugify(sup), name: sup, role: "sup" }); }); return out; })() })));
@@ -9771,7 +10019,7 @@ function RouteApp() {
     if (screen === "route-map") {
         const totalKm = totalRouteDistanceKm(mapEntries);
         return (React.createElement("div", { className: "min-h-full bg-stone-50 pb-8" },
-            React.createElement(BackHeader, { title: "Mapa da rota", subtitle: mapContext === null || mapContext === void 0 ? void 0 : mapContext.name, onBack: () => setScreen((mapContext === null || mapContext === void 0 ? void 0 : mapContext.kind) === "sup_visits" ? "admin-sup-visits" : (mapContext === null || mapContext === void 0 ? void 0 : mapContext.kind) === "admin_visits" ? "admin-my-visits" : (adminAuthed ? "admin-rep-visits" : (activeRep ? "rep-dash" : "sup-dash"))) }),
+            React.createElement(BackHeader, { title: "Mapa da rota", subtitle: mapContext === null || mapContext === void 0 ? void 0 : mapContext.name, onBack: () => setScreen((mapContext && mapContext.back) ? mapContext.back : (mapContext === null || mapContext === void 0 ? void 0 : mapContext.kind) === "sup_visits" ? "admin-sup-visits" : (mapContext === null || mapContext === void 0 ? void 0 : mapContext.kind) === "admin_visits" ? "admin-my-visits" : (adminAuthed ? "admin-rep-visits" : (activeRep ? "rep-dash" : "sup-dash"))) }),
             React.createElement("div", { className: "p-4 flex flex-col gap-3" },
                 React.createElement("input", { type: "date", value: mapDate, onChange: (e) => setMapDate(e.target.value), className: "w-full border border-stone-300 rounded-lg p-2.5 text-sm bg-white" }),
                 mapLoading ? (React.createElement("div", { className: "text-center text-stone-400 text-sm py-10" }, "A carregar mapa...")) : (React.createElement(RouteMapView, { points: mapEntries }))),

@@ -2396,7 +2396,7 @@ function MetasImport({ clients, onPrices, pricesMsg, priceCount, clearPrices }) 
         try {
             const wb = await mtReadBook(f);
             const rows = mtSheetRows(wb.Sheets[wb.SheetNames[0]]);
-            const H = mtFindHeader(rows, { code: ["ITEM CODE-SAP", "MATERIAL CODE", "MATERIAL"], desc_opt: ["ITEM DESCRIPTION", "MATERIAL DESCRIPTION", "DESCRIPTION", "PRODUTO"], cat: ["CATEGORY"], sub: ["CATEGORY GROUPING"], grp_opt: ["ITEM GROUPING"] });
+            const H = mtFindHeader(rows, { code: ["ITEM CODE-SAP", "MATERIAL CODE", "MATERIAL"], desc_opt: ["ITEM DESCRIPTION", "MATERIAL DESCRIPTION", "DESCRIPTION", "PRODUTO"], cat: ["CATEGORY"], sub: ["CATEGORY GROUPING"], grp_opt: ["ITEM GROUPING"], brand_opt: ["BRAND", "MARCA"] });
             if (!H) throw new Error("Não encontrei as colunas Item Code-SAP (ou Material Code), Category e Category grouping.");
             const map = Object.assign({}, await mtItems(true));
             let n = 0;
@@ -2404,7 +2404,7 @@ function MetasImport({ clients, onPrices, pricesMsg, priceCount, clearPrices }) 
                 const r = rows[i];
                 const code = mtCode(r && r[H.idx.code]);
                 if (!code || !r[H.idx.cat]) continue;
-                map[code] = Object.assign({}, map[code] && map[code].w ? { w: map[code].w } : {}, { d: H.idx.desc_opt >= 0 ? String(r[H.idx.desc_opt] == null ? "" : r[H.idx.desc_opt]).replace(/\u00a0/g, " ").trim() : ((map[code] && map[code].d) || ""), c: mtNorm(r[H.idx.cat]), s: mtNorm(r[H.idx.sub] || r[H.idx.cat]) }, H.idx.grp_opt >= 0 && r[H.idx.grp_opt] ? { g: String(r[H.idx.grp_opt]).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim() } : {});
+                map[code] = Object.assign({}, map[code] && map[code].w ? { w: map[code].w } : {}, { d: H.idx.desc_opt >= 0 ? String(r[H.idx.desc_opt] == null ? "" : r[H.idx.desc_opt]).replace(/\u00a0/g, " ").trim() : ((map[code] && map[code].d) || ""), c: mtNorm(r[H.idx.cat]), s: mtNorm(r[H.idx.sub] || r[H.idx.cat]) }, H.idx.grp_opt >= 0 && r[H.idx.grp_opt] ? { g: String(r[H.idx.grp_opt]).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim() } : {}, H.idx.brand_opt >= 0 && r[H.idx.brand_opt] ? { b: mtNorm(r[H.idx.brand_opt]) } : (map[code] && map[code].b ? { b: map[code].b } : {}));
                 n++;
             }
             await mtPut("metas_items/current", { map });
@@ -2512,7 +2512,7 @@ function MetasProducts() {
         const e = edit[c] || {}, m = map[c];
         return m && ((e.c != null && mtNorm(e.c) !== m.c) || (e.s != null && mtNorm(e.s) !== m.s) || (e.w != null && e.w !== "" && Number(String(e.w).replace(",", ".")) !== (m.w || 0)));
     });
-    const apply = (m, c) => { const e = edit[c] || {}; const nw = e.w != null && e.w !== "" ? Number(String(e.w).replace(",", ".")) : m[c].w; const o = { d: m[c].d, c: mtNorm(e.c != null ? e.c : m[c].c), s: mtNorm(e.s != null ? e.s : m[c].s) }; if (nw > 0) o.w = nw; if (m[c].g) o.g = m[c].g; m[c] = o; };
+    const apply = (m, c) => { const e = edit[c] || {}; const nw = e.w != null && e.w !== "" ? Number(String(e.w).replace(",", ".")) : m[c].w; const o = { d: m[c].d, c: mtNorm(e.c != null ? e.c : m[c].c), s: mtNorm(e.s != null ? e.s : m[c].s) }; if (nw > 0) o.w = nw; if (m[c].g) o.g = m[c].g; if (m[c].b) o.b = m[c].b; m[c] = o; };
     const save = async (c) => {
         const m = Object.assign({}, await mtItems(true));
         apply(m, c);
@@ -2757,6 +2757,7 @@ function CompanySales() {
     const [all, setAll] = useState(null); // { month: rows }
     const [items, setItems] = useState({});
     const [team, setTeam] = useState({});
+    const [prodBrand, setProdBrand] = useState({}); // product code -> brand, from the order price list (when Metas has no brand)
     const [selMonths, setSelMonths] = useState([]); // one or more months (summed)
     const [unit, setUnit] = useState("kz");
     // drill-down like Metas: Início > Gestor > Canal > Supervisor > Vendedor
@@ -2767,6 +2768,8 @@ function CompanySales() {
     const [openSubs, setOpenSubs] = useState([]); // ... and subcategories opened to show their item groupings
     const [prodQ, setProdQ] = useState(""); // search in Produtos mais vendidos
     const [openT, setOpenT] = useState([]); // rows opened in the other tables (gestor / canal ...): "tabela\u0002chave"
+    const [brands, setBrands] = useState([]); // brand filter (several allowed); empty = all
+    const [bMode, setBMode] = useState("v"); // Por marca e canal: "v" = values, "p" = % of each channel
     const [fPanel, setFPanel] = useState(null); // filter panel open under the 2 buttons: "m" (meses) | "c" (categorias) | null
     // while a panel is open the choice is a draft; it is applied when the panel closes (OK, tap outside, scroll)
     const [dM, setDM] = useState([]); // draft months
@@ -2788,6 +2791,13 @@ function CompanySales() {
                 if (dead) return;
                 const a = {}; ms.forEach((m, k) => { a[m] = (docs[k] && docs[k].rows) || []; a[m].updated = docs[k] && docs[k].updated; });
                 setIdx(i); setItems(it); setTeam(tm); setAll(a); setSelMonths(ms.length ? [ms[ms.length - 1]] : []);
+                // brands: Metas products keep the "Brand" column of the products file; older imports don't, so the
+                // order price list (products/current) fills the gap by product code
+                try {
+                    const pc = await fsGetDoc("products/current"), pb = {};
+                    ((pc && pc.data) || []).forEach((p) => { const c = mtCode(p.code), b = mtNorm(p.brand); if (c && b) pb[c] = b; });
+                    if (!dead) setProdBrand(pb);
+                } catch (e) { }
             } catch (e) { if (!dead) setErr(String(e.message || e)); }
         })();
         return () => { dead = true; };
@@ -2795,6 +2805,7 @@ function CompanySales() {
     // tons: the SAP "Tons" column when present, otherwise boxes x kg per box
     const val = (r, it, u) => u === "kz" ? (r[3] || 0) : u === "t" ? (r[4] != null ? r[4] : (it && it.w > 0 ? (r[2] * it.w) / 1000 : 0)) : r[2];
     const chOf = (seller) => (team[seller] && team[seller].ch) || "";
+    const brandOf = (code) => (items[code] && items[code].b) || prodBrand[code] || "SEM MARCA";
     const fieldOf = (seller, k) => (k === "seller" ? seller : ((team[seller] && team[seller][k]) || ""));
     const ch = (path.find((p) => p.k === "ch") || {}).val || "";
     const lastK = path.length ? path[path.length - 1].k : null;
@@ -2808,8 +2819,8 @@ function CompanySales() {
     };
     const calc = useMemo(() => {
         if (!all || !month) return null;
-        const chSet = new Set(chans), catSet = new Set(cats);
-        const pass = (r) => { const it = items[r[1]]; return path.every((p) => fieldOf(r[0], p.k) === p.val) && (!chSet.size || chSet.has(chOf(r[0]))) && (!catSet.size || catSet.has((it && it.c) || "SEM CATEGORIA")) ; };
+        const chSet = new Set(chans), catSet = new Set(cats), brSet = new Set(brands);
+        const pass = (r) => { const it = items[r[1]]; return path.every((p) => fieldOf(r[0], p.k) === p.val) && (!chSet.size || chSet.has(chOf(r[0]))) && (!catSet.size || catSet.has((it && it.c) || "SEM CATEGORIA")) && (!brSet.size || brSet.has(brandOf(r[1]))); };
         const tot = (rows) => { const o = { kz: 0, t: 0, cx: 0 }; rows.forEach((r) => { if (!pass(r)) return; const it = items[r[1]]; o.kz += r[3] || 0; o.t += val(r, it, "t"); o.cx += r[2]; }); return o; };
         const months = Object.keys(all).sort();
         const perMonth = months.map((m) => [m, tot(all[m])]);
@@ -2857,7 +2868,7 @@ function CompanySales() {
         const prodTree = tree([(r) => r[1]]);
         const byCatAll = {};
         rows.forEach((r) => {
-            if (!path.every((p) => fieldOf(r[0], p.k) === p.val) || (chSet.size && !chSet.has(chOf(r[0])))) return;
+            if (!path.every((p) => fieldOf(r[0], p.k) === p.val) || (chSet.size && !chSet.has(chOf(r[0]))) || (brSet.size && !brSet.has(brandOf(r[1])))) return;
             const it = items[r[1]], k = (it && it.c) || "SEM CATEGORIA", x = byCatAll[k] || (byCatAll[k] = { kz: 0, t: 0, cx: 0 });
             x.kz += r[3] || 0; x.t += val(r, it, "t"); x.cx += r[2];
         });
@@ -2866,11 +2877,25 @@ function CompanySales() {
         const consecutive = ix.length > 0 && ix.every((v, k) => k === 0 || v === ix[k - 1] + 1);
         const prevMs = consecutive && ix[0] - ix.length >= 0 ? months.slice(ix[0] - ix.length, ix[0]) : [];
         const prev = prevMs.length ? tot([].concat(...prevMs.map((m) => all[m]))) : null;
+        // previous period per channel (for the per-channel lines in the black card)
+        const prevByCh = {};
+        if (prevMs.length) [].concat(...prevMs.map((m) => all[m])).forEach((r) => { if (!pass(r)) return; const it = items[r[1]], k = chOf(r[0]) || "OUTROS", x = prevByCh[k] || (prevByCh[k] = { kz: 0, t: 0, cx: 0 }); x.kz += r[3] || 0; x.t += val(r, it, "t"); x.cx += r[2]; });
+        // previous period per brand (for ▲▼ in Por marca e canal)
+        const brandPrev = {};
+        if (prevMs.length) [].concat(...prevMs.map((m) => all[m])).forEach((r) => { if (!pass(r)) return; const it = items[r[1]], b = brandOf(r[1]), x = brandPrev[b] || (brandPrev[b] = { kz: 0, t: 0, cx: 0 }); x.kz += r[3] || 0; x.t += val(r, it, "t"); x.cx += r[2]; });
+        const brandList = [...new Set([].concat(...Object.values(all)).map((r) => brandOf(r[1])))].sort((a, b) => (a === "SEM MARCA") - (b === "SEM MARCA") || a.localeCompare(b));
+        // Por marca e canal: key "marca" / "marca\u0001categoria" -> channel -> totals (chosen months summed)
+        const brandCh = {};
+        rows.forEach((r) => {
+            if (!pass(r)) return;
+            const it = items[r[1]], v = { kz: r[3] || 0, t: val(r, it, "t"), cx: r[2] }, c = chOf(r[0]) || "OUTROS", b = brandOf(r[1]);
+            [b, b + "\u0001" + ((it && it.c) || "SEM CATEGORIA")].forEach((k) => { const o = brandCh[k] || (brandCh[k] = {}), x = o[c] || (o[c] = { kz: 0, t: 0, cx: 0 }); x.kz += v.kz; x.t += v.t; x.cx += v.cx; });
+        });
         const channels = [...new Set(Object.values(all).flat().map((r) => chOf(r[0])).filter(Boolean))].sort();
         const levelTitle = nextLevel ? { mgr: "Por gestor", ch: "Por canal", sup: "Por supervisor", seller: "Por vendedor" }[nextLevel[0]] : "";
         const catList = [...new Set(Object.values(items).map((i) => i.c))].sort();
-        return { cur, prev, prevMs, sm, perMonth, byCh, byCat, bySub, byGrp, piv, byCatAll, levelTree, levelKinds, chanTree, prodTree, byProd, byLevel, levelTitle, channels, catList, months };
-    }, [all, items, team, selMonths, path, chans, cats]);
+        return { cur, prev, prevMs, prevByCh, brandCh, brandPrev, brandList, sm, perMonth, byCh, byCat, bySub, byGrp, piv, byCatAll, levelTree, levelKinds, chanTree, prodTree, byProd, byLevel, levelTitle, channels, catList, months };
+    }, [all, items, team, prodBrand, selMonths, path, chans, cats, brands]);
     useEffect(() => {
         const el = stickRef.current; if (!el) return;
         const measure = () => {
@@ -3057,6 +3082,72 @@ function CompanySales() {
                                 pct && mtH("td", { key: "p", className: td + " bg-blue-900" }, "100%"))))),
             limit && tops.length > limit && mtH("button", { onClick: () => setTopN(topN + 20), className: "w-full text-sm text-blue-900 font-semibold py-2 border-t border-stone-100" }, "Ver mais"));
     };
+    // Por marca e canal: rows = marca (tap to open its categories), columns = each channel in the data + Total (chosen months summed)
+    const BrandMatrix = () => {
+        const data = calc.brandCh, SEP = "\u0001";
+        const sumK = (k) => Object.values(data[k] || {}).reduce((a, v) => a + (v[unit] || 0), 0);
+        const chTot = {}; Object.keys(data).filter((k) => k.indexOf(SEP) < 0).forEach((k) => Object.entries(data[k]).forEach(([c, v]) => { chTot[c] = (chTot[c] || 0) + (v[unit] || 0); }));
+        const cols = Object.keys(chTot).filter((c) => chTot[c] !== 0).sort((a, b) => chTot[b] - chTot[a]);
+        const brands = Object.keys(data).filter((k) => k.indexOf(SEP) < 0 && sumK(k) !== 0).sort((a, b) => sumK(b) - sumK(a));
+        const G = brands.reduce((a, k) => a + sumK(k), 0), multiCol = cols.length > 1;
+        const num = (n) => !n ? "" : unit === "kz" ? (n / 1e6).toLocaleString("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : unit === "t" ? n.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : mtFmt(n);
+        const cell = (k, c) => ((data[k] || {})[c] || {})[unit] || 0;
+        const pc = bMode === "p"; // % mode: each cell = share of that channel's total (the column adds up to 100%)
+        const share = (n, of) => of ? (Math.round(n / of * 1000) / 10).toLocaleString("pt-PT") + "%" : "";
+        const hasPrev = calc.prevMs.length > 0, pv = (k) => ((calc.brandPrev[k] || {})[unit]) || 0;
+        const vsAnt = (k, cls) => { if (!hasPrev) return null; const c = k.indexOf(SEP) < 0 ? chg(sumK(k), pv(k)) : null; return mtH("td", { key: "_v", className: td + " " + cls }, c == null ? "" : mtH("span", { className: c >= 0 ? "text-emerald-600" : "text-rose-600" }, (c >= 0 ? "\u25B2 " : "\u25BC ") + Math.abs(c).toLocaleString("pt-PT") + "%")); };
+        const td = "px-2 py-1.5 text-right whitespace-nowrap";
+        const first = "sticky left-0 z-[1] px-2 py-1.5 text-left whitespace-nowrap max-w-[150px] truncate shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)]";
+        const cells = (k, cls) => [...cols.map((c) => mtH("td", { key: c, className: td + " " + cls }, pc ? (cell(k, c) ? share(cell(k, c), chTot[c]) : "") : num(cell(k, c)))), multiCol && mtH("td", { key: "_t", className: td + " font-semibold " + cls }, pc ? share(sumK(k), G) : num(sumK(k))), !pc && mtH("td", { key: "_p", className: td + " text-stone-400 font-normal " + cls }, G ? Math.round(sumK(k) / G * 100) + "%" : ""), vsAnt(k, cls)];
+        const exportB = () => {
+            const uL = unit === "kz" ? "Kz" : unit === "t" ? "Toneladas" : "Caixas", r2 = (n) => unit === "t" ? Math.round(n * 100) / 100 : Math.round(n);
+            const head = ["Marca", "Categoria"].concat(cols.map((c) => mtChannelLabel(c === "OUTROS" ? "" : c) + " (" + uL + ")"), ["Total (" + uL + ")", "% do total"], hasPrev ? [monthsLabel(calc.prevMs) + " (" + uL + ")"] : []);
+            const a1 = [head], a2 = [["Marca", "Categoria"].concat(cols.map((c) => mtChannelLabel(c === "OUTROS" ? "" : c) + " (% do canal)"), ["Total (% do total)"])];
+            brands.forEach((b) => [b].concat(Object.keys(data).filter((k) => k.startsWith(b + SEP) && sumK(k) !== 0).sort((x, y) => sumK(y) - sumK(x))).forEach((k) => {
+                const nm = k.split(SEP);
+                a1.push([nm[0], nm[1] || "(todas)"].concat(cols.map((c) => r2(cell(k, c))), [r2(sumK(k)), G ? Math.round(sumK(k) / G * 1000) / 10 : 0], hasPrev ? [k.indexOf(SEP) < 0 ? r2(pv(k)) : ""] : []));
+                a2.push([nm[0], nm[1] || "(todas)"].concat(cols.map((c) => chTot[c] ? Math.round(cell(k, c) / chTot[c] * 1000) / 10 : 0), [G ? Math.round(sumK(k) / G * 1000) / 10 : 0]));
+            }));
+            a1.push(["Total", ""].concat(cols.map((c) => r2(chTot[c])), [r2(G), 100]));
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a1), "Marca e canal");
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a2), "% do canal");
+            XLSX.writeFile(wb, "Vendas_marca_canal_" + calc.sm.join("_") + ".xlsx");
+        };
+        const body = [];
+        brands.forEach((b) => {
+            const oid = "brand\u0002" + b, isOpen = openT.includes(oid);
+            body.push(mtH("tr", { key: b, onClick: () => setOpenT(isOpen ? openT.filter((x) => x !== oid) : [...openT, oid]), className: "cursor-pointer font-bold text-stone-900" },
+                mtH("td", { className: first + " bg-white border-t border-stone-200" }, mtH("span", { className: "text-blue-600" }, isOpen ? "\u25BE " : "\u25B8 "), b), ...cells(b, "bg-white border-t border-stone-200")));
+            if (isOpen) Object.keys(data).filter((k) => k.startsWith(b + SEP) && sumK(k) !== 0).sort((x, y) => sumK(y) - sumK(x)).forEach((k) => body.push(mtH("tr", { key: k, className: "text-stone-600" },
+                mtH("td", { className: first + " bg-slate-50 pl-5" }, k.split(SEP)[1]), ...cells(k, "bg-slate-50"))));
+        });
+        return mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
+            mtH("div", { className: "flex justify-between items-baseline px-3 pt-3 pb-2" },
+                mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, (multiCol ? "Por marca e canal" : "Por marca") + " \u00b7 toque para abrir"),
+                mtH("div", { className: "text-[10px] text-stone-400" }, pc ? "% do canal" : unit === "kz" ? "M Kz" : unit === "t" ? "Toneladas" : "Caixas")),
+            brands.length > 0 && mtH("div", { className: "flex items-center gap-2 px-3 pb-2" },
+                mtH("div", { className: "flex bg-stone-100 rounded-lg p-1 gap-1" },
+                    [["v", "Valores"], ["p", "% do canal"]].map(([k, l]) => mtH("button", { key: k, onClick: () => setBMode(k), className: `px-3 py-1 rounded-md text-xs font-semibold ${bMode === k ? "bg-blue-900 text-white" : "text-stone-600"}` }, l))),
+                mtH("button", { onClick: exportB, className: "ml-auto text-xs font-semibold text-emerald-700 border border-emerald-600 rounded-lg px-2.5 py-1 active:bg-emerald-50" }, "\u2B07 Excel")),
+            brands.length === 0 ? mtH("div", { className: "text-sm text-stone-400 px-3 pb-3" }, "Sem vendas.") :
+                mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "none", WebkitOverflowScrolling: "touch" } },
+                    mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
+                        mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
+                            mtH("th", { className: first + " bg-blue-900 font-semibold" }, "Marca"),
+                            cols.map((c) => mtH("th", { key: c, className: td + " font-semibold" }, mtChannelLabel(c === "OUTROS" ? "" : c))),
+                            multiCol && mtH("th", { className: td + " font-semibold" }, "Total"),
+                            !pc && mtH("th", { className: td + " font-semibold" }, "%"),
+                            hasPrev && mtH("th", { className: td + " font-semibold" }, "vs ant."))),
+                        mtH("tbody", null, ...body,
+                            mtH("tr", { key: "_tot", className: "font-bold text-white" },
+                                mtH("td", { className: first + " bg-blue-900" }, "Total"),
+                                ...cols.map((c) => mtH("td", { key: c, className: td + " bg-blue-900" }, pc ? "100%" : num(chTot[c]))),
+                                multiCol && mtH("td", { key: "_t", className: td + " bg-blue-900" }, pc ? "100%" : num(G)),
+                                !pc && mtH("td", { key: "_p", className: td + " bg-blue-900" }, "100%"),
+                                hasPrev && mtH("td", { key: "_v", className: td + " bg-blue-900" }, (() => { const c = chg(G, Object.values(calc.brandPrev).reduce((a, v) => a + (v[unit] || 0), 0)); return c == null ? "" : (c >= 0 ? "\u25B2 " : "\u25BC ") + Math.abs(c).toLocaleString("pt-PT") + "%"; })()))))),
+            mtH("div", { className: "text-[10px] text-stone-400 px-3 py-2" }, (calc.sm.length > 1 ? "Meses escolhidos somados. " : "") + (brands.includes("SEM MARCA") ? "\u201cSEM MARCA\u201d = produtos sem marca no ficheiro de produtos: importe-o de novo com a coluna Brand. " : "") + (pc ? "% do canal = parte de cada marca nas vendas desse canal (cada coluna soma 100%). " : "") + (hasPrev ? "\u25B2\u25BC = total da marca vs " + monthsLabel(calc.prevMs) + (curOnly ? " (m\u00eas em curso: ainda incompleto)." : ".") : "")));
+    };
     // filters: two buttons (\uD83D\uDCC5 meses / \uD83C\uDFF7\uFE0F categorias), each opens a small panel under them
     const allMonths = calc.months.length > 0 && calc.months.every((m) => selMonths.includes(m));
     const openPanel = (k) => {
@@ -3114,7 +3205,9 @@ function CompanySales() {
                     mtH("span", { className: "text-[11px] text-stone-400" }, dC.length ? "" : "Escolha pelo menos uma categoria"),
                     mtH("button", { onClick: closePanel, className: "bg-blue-900 text-white font-bold text-xs rounded-lg px-5 py-1.5" }, "OK")))),
         mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
-            mtH(MtMultiSelect, { label: "Canal", values: chanValues, onChange: onChans, allLabel: "Todos", options: calc.channels.map((c) => [c, mtChannelLabel(c)]) }),
+            mtH("div", { className: "flex gap-2" },
+                mtH(MtMultiSelect, { label: "Canal", values: chanValues, onChange: onChans, allLabel: "Todos", options: calc.channels.map((c) => [c, mtChannelLabel(c)]) }),
+                calc.brandList.length > 1 && mtH(MtMultiSelect, { label: "Marca", values: brands, onChange: setBrands, allLabel: "Todas", options: calc.brandList.map((b) => [b, b]) })),
             mtH("div", { className: "text-[11px] text-stone-400" }, upd ? "Relatório SAP atualizado em " + new Date(upd).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "")),
         path.length > 0 && mtH("div", { className: "flex flex-wrap items-center gap-1 text-xs" },
             mtH("button", { onClick: () => setPath([]), className: "px-2 py-1 rounded bg-white border border-stone-200 text-blue-900 font-semibold" }, "Início"),
@@ -3122,10 +3215,20 @@ function CompanySales() {
                 mtH("span", { className: "text-stone-400" }, "›"),
                 mtH("button", { onClick: () => setPath(path.slice(0, i + 1)), className: `px-2 py-1 rounded border font-semibold ${i === path.length - 1 ? "bg-blue-900 text-white border-blue-900" : "bg-white border-stone-200 text-blue-900"}` }, (p.k === "ch" ? mtChannelLabel(p.val) : p.val) || "(sem nome)")))),
         mtH("div", { className: "bg-stone-900 text-white rounded-2xl p-4" },
-            mtH("div", { className: "text-stone-400 text-xs" }, monthsLabel(calc.sm) + (calc.sm.includes(mtThisMonth()) ? " (em curso)" : "") + (path.length ? " · " + ((path[path.length - 1].k === "ch" ? mtChannelLabel(path[path.length - 1].val) : path[path.length - 1].val) || "(sem nome)") : chanLabel ? " · " + chanLabel : " · Toda a empresa") + (catLabel ? " · " + catLabel : "")),
+            mtH("div", { className: "text-stone-400 text-xs" }, monthsLabel(calc.sm) + (calc.sm.includes(mtThisMonth()) ? " (em curso)" : "") + (path.length ? " · " + ((path[path.length - 1].k === "ch" ? mtChannelLabel(path[path.length - 1].val) : path[path.length - 1].val) || "(sem nome)") : chanLabel ? " · " + chanLabel : " · Toda a empresa") + (catLabel ? " · " + catLabel : "") + (brands.length ? " · " + (brands.length <= 2 ? brands.join(" + ") : brands.length + " marcas") : "")),
             mtH("div", { className: "text-2xl font-bold mt-1 text-amber-400" }, fmtU(calc.cur[unit])),
             curOnly ? mtH("div", { className: "text-[11px] text-stone-300" }, "Até dia " + domCur + " de " + dimCur + " · ritmo do mês ≈ " + fmtU(proj) + " ", calc.prev && mtH(Chg, { a: proj, b: calc.prev[unit] }))
                 : calc.prev && mtH(Chg, { a: calc.cur[unit], b: calc.prev[unit] }),
+            chans.length > 1 && mtH("div", { className: "mt-3 flex flex-col gap-1.5" },
+                Object.entries(calc.byCh).filter(([, v]) => v[unit] !== 0).sort((a, b) => b[1][unit] - a[1][unit]).map(([c, v]) => {
+                    const pv = calc.prevByCh[c], pc = curOnly ? null : (pv && pv[unit] ? chg(v[unit], pv[unit]) : null), share = calc.cur[unit] ? Math.round(v[unit] / calc.cur[unit] * 100) : 0;
+                    return mtH("div", { key: c },
+                        mtH("div", { className: "flex justify-between gap-2 text-xs" },
+                            mtH("span", { className: "font-semibold truncate" }, mtChannelLabel(c === "OUTROS" ? "" : c)),
+                            mtH("span", { className: "shrink-0" }, fmtU(v[unit]), mtH("span", { className: "text-stone-400" }, "  " + share + "%"),
+                                pc != null && mtH("span", { className: "text-[10px] font-semibold ml-1 " + (pc >= 0 ? "text-emerald-400" : "text-rose-400") }, (pc >= 0 ? "\u25B2" : "\u25BC") + Math.abs(pc).toLocaleString("pt-PT") + "%"))),
+                        mtH("div", { className: "h-1 bg-stone-700 rounded-full overflow-hidden mt-0.5" }, mtH("div", { className: "h-full bg-amber-400", style: { width: Math.max(0, share) + "%" } })));
+                })),
             mtH("div", { className: "grid grid-cols-3 gap-2 mt-3" },
                 [["Valor", (calc.cur.kz / 1e6).toLocaleString("pt-PT", { maximumFractionDigits: 1 }) + " M Kz"], ["Toneladas", mtFmtT(calc.cur.t)], ["Caixas", mtFmt(calc.cur.cx)]].map(([l, v]) => mtH("div", { key: l, className: "bg-stone-800 rounded-xl p-2" },
                     mtH("div", { className: "text-[9px] text-stone-400 uppercase tracking-wide font-semibold" }, l),
@@ -3152,14 +3255,15 @@ function CompanySales() {
                         mtH("td", { className: "px-2 py-1.5 text-right bg-blue-900" }, fmtU(calc.cur[unit])),
                         mtH("td", { className: "px-3 py-1.5 bg-blue-900" }, ""))))),
         mtH(CatList, null),
+        mtH(BrandMatrix, null),
         nextLevel && TreeTable({ id: "lvl", title: calc.levelTitle + (nextLevel[0] === "seller" ? "" : " \u00b7 toque para abrir"), head: nextLevel[1], data: calc.levelTree, kinds: calc.levelKinds, pct: true,
             label: (v, d) => (calc.levelKinds[d] && calc.levelKinds[d][0] === "ch" ? (v ? mtChannelLabel(v) : "") : v) || "(sem " + ((calc.levelKinds[d] || ["", "nome"])[1]).toLowerCase() + ")" }),
         path.length === 0 && TreeTable({ id: "ch", title: "Por canal \u00b7 toque para abrir", head: "Canal", data: calc.chanTree, kinds: [1, 2, 3], pct: true,
             label: (v, d) => d === 0 ? mtChannelLabel(v === "OUTROS" ? "" : v) : (v || (d === 1 ? "(sem supervisor)" : "(sem nome)")) }),
         TreeTable({ id: "prod", title: "Produtos mais vendidos", head: "Produto", data: calc.prodTree, rank: true, limit: topN, search: true, label: (code) => (items[code] && items[code].d) || code }),
-        mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly, chOf,
+        mtH(MtMarketSales, { sm: calc.sm, prevMs: calc.prevMs, unit, fmtU, items, fkey: JSON.stringify([path, chans, cats, brands]), projF: curOnly && domCur ? dimCur / domCur : 1, curLabel: monthsLabel(calc.sm), prevLabel: monthsLabel(calc.prevMs), curOnly, chOf,
             passSeller: (s) => path.every((p) => fieldOf(s, p.k) === p.val) && (!chans.length || chans.includes(chOf(s))),
-            passItem: (code) => !cats.length || cats.includes((items[code] && items[code].c) || "SEM CATEGORIA") }));
+            passItem: (code) => (!cats.length || cats.includes((items[code] && items[code].c) || "SEM CATEGORIA")) && (!brands.length || brands.includes(brandOf(code))) }));
 }
 // ---- the header + view used for metas-only people (and managers / owner) ----
 // tabs as emoji tiles inside a black greeting card (same look as Admin / Direção)
@@ -4113,6 +4217,9 @@ function FulfilmentView({ scope } = {}) {
     const [unit, setUnit] = useState(restricted ? "cx" : "kz");
     const [path, setPath] = useState([]);
     const [cats, setCats] = useState([]);
+    const [chans, setChans] = useState([]); // channel filter (several allowed); empty = all
+    const [openRes, setOpenRes] = useState([]); // Resumo table: channels opened to show their months
+    const [prodBrandF, setProdBrandF] = useState({}); // product code -> brand from the order price list (fallback)
     const [err, setErr] = useState(null);
     const [topN, setTopN] = useState(15);
     const [topP, setTopP] = useState(20);
@@ -4129,11 +4236,17 @@ function FulfilmentView({ scope } = {}) {
                 const a = {};
                 ms.forEach((m, k) => { const rs = (docs[k] && docs[k].rows) || []; a[m] = { agg: rs.filter((r) => r[0] === "A"), pend: rs.filter((r) => r[0] === "P"), updated: docs[k] && docs[k].updated }; });
                 setIdx(ms); setItems(it); setTeam(tm); setAll(a); setSelMonths(ms.length ? [ms[ms.length - 1]] : []);
+                try {
+                    const pc = await fsGetDoc("products/current"), pb = {};
+                    ((pc && pc.data) || []).forEach((p) => { const c = mtCode(p.code), b = mtNorm(p.brand); if (c && b) pb[c] = b; });
+                    if (!dead) setProdBrandF(pb);
+                } catch (e) { }
             } catch (e) { if (!dead) setErr(String(e.message || e)); }
         })();
         return () => { dead = true; };
     }, []);
     const fieldOf = (seller, k) => (k === "seller" ? seller : ((team[seller] && team[seller][k]) || ""));
+    const chOfF = (seller) => (team[seller] && team[seller].ch) || "OUTROS";
     const lastK = path.length ? path[path.length - 1].k : null;
     const LV = restricted ? mtLevelsFor(scope.kind) : MT_LEVELS;
     const nextLevel = LV[lastK ? LV.findIndex(([k]) => k === lastK) + 1 : 0] || null;
@@ -4142,12 +4255,12 @@ function FulfilmentView({ scope } = {}) {
     const calc = useMemo(() => {
         if (!all || !selMonths.length) return null;
         const catSet = new Set(cats);
-        const sellerOk = (s) => inScope(s) && path.every((p) => fieldOf(s, p.k) === p.val);
+        const sellerOk = (s) => inScope(s) && path.every((p) => fieldOf(s, p.k) === p.val) && (!chans.length || chans.includes(chOfF(s)));
         const pass = (r) => { const it = items[r[2]]; return sellerOk(r[1]) && (!catSet.size || catSet.has((it && it.c) || "SEM CATEGORIA")); };
         const V = (r) => unit === "kz" ? [r[4], r[6]] : unit === "t" ? [r[7], r[8]] : [r[3], r[5]];
         const sm = selMonths.filter((m) => all[m]).sort();
         const rows = [].concat(...sm.map((m) => all[m].agg)).filter(pass);
-        const tot = [0, 0], totAll = { kz: [0, 0], t: [0, 0], cx: [0, 0] }, byLevel = {}, byCat = {}, byProd = {};
+        const tot = [0, 0], totAll = { kz: [0, 0], t: [0, 0], cx: [0, 0] }, byLevel = {}, byCat = {}, byProd = {}, byBrand = {};
         const add = (o, k, v, extra) => { const x = o[k] || (o[k] = Object.assign({ d: 0, i: 0 }, extra)); x.d += v[0]; x.i += v[1]; };
         rows.forEach((r) => {
             const v = V(r), it = items[r[2]];
@@ -4155,13 +4268,24 @@ function FulfilmentView({ scope } = {}) {
             totAll.kz[0] += r[4]; totAll.kz[1] += r[6]; totAll.t[0] += r[7]; totAll.t[1] += r[8]; totAll.cx[0] += r[3]; totAll.cx[1] += r[5];
             if (nextLevel) add(byLevel, fieldOf(r[1], nextLevel[0]) || (r[1] ? "—" : "(sem vendedor)"), v);
             add(byCat, (it && it.c) || "SEM CATEGORIA", v);
+            add(byBrand, (it && it.b) || prodBrandF[r[2]] || "SEM MARCA", v);
             add(byProd, r[2], v, { name: (it && it.d) || r[2] });
         });
+        // Resumo table: channel -> month -> [vendas, faturado] (and month totals)
+        const resCh = {}, resM = {};
+        sm.forEach((m) => all[m].agg.forEach((r) => {
+            if (!pass(r)) return;
+            const v = V(r), c = chOfF(r[1]);
+            const x = (resCh[c] || (resCh[c] = {}))[m] || (resCh[c][m] = [0, 0]); x[0] += v[0]; x[1] += v[1];
+            const y = resM[m] || (resM[m] = [0, 0]); y[0] += v[0]; y[1] += v[1];
+        }));
+        // channels the person can see (for the Canal filter)
+        const chanList = [...new Set([].concat(...Object.values(all).map((o) => o.agg)).filter((r) => inScope(r[1])).map((r) => chOfF(r[1])))].sort();
         const pend = [].concat(...sm.map((m) => all[m].pend)).filter((p) => sellerOk(p[5]));
         const catList = [...new Set(Object.values(items).map((i) => i.c))].sort();
         const ups = sm.map((m) => all[m].updated).filter(Boolean).sort();
-        return { tot, totAll, byLevel, byCat, byProd, pend, catList, sm, updated: ups[ups.length - 1], rows, sellerOk };
-    }, [all, items, team, selMonths, path, cats, unit, scopeKey]);
+        return { tot, totAll, byLevel, byCat, byProd, byBrand, pend, catList, sm, updated: ups[ups.length - 1], rows, sellerOk, resCh, resM, chanList };
+    }, [all, items, team, prodBrandF, selMonths, path, cats, chans, unit, scopeKey]);
     if (err) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-rose-50 border border-rose-200 text-rose-800 text-sm rounded-lg p-3" }, err));
     if (idx && !idx.length) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-4 text-sm text-stone-500 text-center" }, "Ainda não há relatório de cumprimento (Sales Fulfilment) importado."));
     if (!calc) return mtH("div", { className: "p-6 text-center text-stone-400 text-sm" }, "A carregar...");
@@ -4182,6 +4306,61 @@ function FulfilmentView({ scope } = {}) {
                     mtH("div", { className: "h-1.5 bg-stone-100 rounded-full overflow-hidden mt-1" }, mtH("div", { className: `h-full bg-${tone(p)}-500`, style: { width: Math.min(100, p) + "%" } })));
             }));
     };
+    // Resumo: Vendas | Faturado | Por faturar | % — one row per channel (tap to see its months) and/or per month
+    const ResumoTable = () => {
+        const ms = calc.sm, multiM = ms.length > 1, chs = Object.keys(calc.resCh), multiC = chans.length > 1 || (chans.length === 0 && path.length === 0 && chs.length > 1);
+        if (!multiM && !multiC) return null;
+        const sumCh = (c) => ms.reduce((a, m) => { const x = calc.resCh[c][m]; return x ? [a[0] + x[0], a[1] + x[1]] : a; }, [0, 0]);
+        const num = (n) => unit === "kz" ? (n / 1e6).toLocaleString("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : unit === "t" ? n.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : mtFmt(n);
+        const td = "px-2 py-1.5 text-right whitespace-nowrap";
+        const first = "sticky left-0 z-[1] px-2 py-1.5 text-left whitespace-nowrap max-w-[150px] truncate shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)]";
+        const cells = (v, cls, tot) => { const p = pct(v[0], v[1]), left = Math.max(0, v[0] - v[1]); return [
+            mtH("td", { key: "d", className: td + " " + cls }, num(v[0])),
+            mtH("td", { key: "i", className: td + " " + cls }, num(v[1])),
+            mtH("td", { key: "l", className: td + " " + cls + (left > 0 && !tot ? " text-rose-700" : "") }, left > 0 ? num(left) : "\u2014"),
+            mtH("td", { key: "p", className: td + " font-bold " + cls + (tot ? "" : " text-" + tone(p) + "-600") }, v[0] ? p.toLocaleString("pt-PT") + "%" : "")]; };
+        const mLab = (m) => MT_MESES[+m.split("-")[1] - 1].slice(0, 3) + " " + m.slice(2, 4);
+        const exportR = () => {
+            const uL = unit === "kz" ? "Kz" : unit === "t" ? "Toneladas" : "Caixas", r2 = (n) => unit === "t" ? Math.round(n * 100) / 100 : Math.round(n);
+            const line = (a, b, v) => [a, b, r2(v[0]), r2(v[1]), r2(Math.max(0, v[0] - v[1])), v[0] ? pct(v[0], v[1]) : ""];
+            const a = [["Canal", "M\u00eas", "Vendas (" + uL + ")", "Faturado (" + uL + ")", "Por faturar (" + uL + ")", "% faturado"]];
+            Object.keys(calc.resCh).sort((x, y) => sumCh(y)[0] - sumCh(x)[0]).forEach((c) => {
+                const cl = mtChannelLabel(c === "OUTROS" ? "" : c);
+                if (multiM) ms.forEach((m) => calc.resCh[c][m] && a.push(line(cl, mtMonthLabel(m), calc.resCh[c][m])));
+                a.push(line(cl, multiM ? "Total" : mtMonthLabel(ms[0]), sumCh(c)));
+            });
+            if (multiM) ms.forEach((m) => calc.resM[m] && a.push(line("Todos", mtMonthLabel(m), calc.resM[m])));
+            a.push(line("Total", "", calc.tot));
+            const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a), "Cumprimento");
+            XLSX.writeFile(wb, "Cumprimento_resumo_" + ms.join("_") + ".xlsx");
+        };
+        const body = [];
+        if (multiC) {
+            chs.sort((a, b) => sumCh(b)[0] - sumCh(a)[0]).forEach((c) => {
+                const isOpen = openRes.includes(c);
+                body.push(mtH("tr", { key: c, onClick: multiM ? () => setOpenRes(isOpen ? openRes.filter((x) => x !== c) : [...openRes, c]) : undefined, className: (multiM ? "cursor-pointer " : "") + "font-bold text-stone-900" },
+                    mtH("td", { className: first + " bg-white border-t border-stone-200" }, multiM ? mtH("span", { className: "text-blue-600" }, isOpen ? "\u25BE " : "\u25B8 ") : null, mtChannelLabel(c === "OUTROS" ? "" : c)), ...cells(sumCh(c), "bg-white border-t border-stone-200")));
+                if (isOpen) ms.forEach((m) => calc.resCh[c][m] && body.push(mtH("tr", { key: c + "|" + m, className: "text-stone-600" },
+                    mtH("td", { className: first + " bg-slate-50 pl-5" }, mLab(m)), ...cells(calc.resCh[c][m], "bg-slate-50"))));
+            });
+        } else ms.forEach((m) => calc.resM[m] && body.push(mtH("tr", { key: m, className: "font-semibold text-stone-800" },
+            mtH("td", { className: first + " bg-white border-t border-stone-200" }, mtMonthLabel(m)), ...cells(calc.resM[m], "bg-white border-t border-stone-200"))));
+        return mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
+            mtH("div", { className: "flex justify-between items-baseline px-3 pt-3 pb-2" },
+                mtH("div", { className: "text-[11px] font-bold text-stone-400 uppercase tracking-wide" }, multiC ? "Resumo por canal" + (multiM ? " \u00b7 toque para ver os meses" : "") : "Resumo por m\u00eas"),
+                mtH("div", { className: "flex items-center gap-2" },
+                    mtH("span", { className: "text-[10px] text-stone-400" }, unit === "kz" ? "M Kz" : unit === "t" ? "Toneladas" : "Caixas"),
+                    mtH("button", { onClick: exportR, className: "text-xs font-semibold text-emerald-700 border border-emerald-600 rounded-lg px-2.5 py-1 active:bg-emerald-50" }, "\u2B07 Excel"))),
+            mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "none", WebkitOverflowScrolling: "touch" } },
+                mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
+                    mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
+                        mtH("th", { className: first + " bg-blue-900 font-semibold" }, multiC ? "Canal" : "M\u00eas"),
+                        ["Vendas", "Faturado", "Por faturar", "%"].map((h) => mtH("th", { key: h, className: td + " font-semibold" }, h)))),
+                    mtH("tbody", null, ...body,
+                        mtH("tr", { key: "_tot", className: "font-bold text-white" },
+                            mtH("td", { className: first + " bg-blue-900" }, "Total"),
+                            ...cells(calc.tot, "bg-blue-900", true))))));
+    };
     const p0 = pct(calc.tot[0], calc.tot[1]);
     const levelTitle = nextLevel ? { mgr: "Por gestor", ch: "Por canal", sup: "Por supervisor", seller: "Por vendedor" }[nextLevel[0]] : "";
     const pendBy = {};
@@ -4194,6 +4373,7 @@ function FulfilmentView({ scope } = {}) {
             mtH("div", { className: "flex gap-2" },
                 mtH(MtMultiSelect, { label: "Mês", values: selMonths, onChange: setSelMonths, required: true, options: idx.map((m) => [m, mtMonthLabel(m)]) }),
                 mtH(MtMultiSelect, { label: "Categoria", values: cats, onChange: setCats, allLabel: "Todas", options: calc.catList.map((c) => [c, c]) })),
+            calc.chanList.length > 1 && mtH(MtMultiSelect, { label: "Canal", values: chans, onChange: (v) => { setChans(v); setPath([]); setOpenRes([]); }, allLabel: "Todos", options: calc.chanList.map((c) => [c, mtChannelLabel(c === "OUTROS" ? "" : c)]) }),
             mtH("div", { className: "text-[11px] text-stone-400" }, calc.updated ? "Relatório SAP importado em " + new Date(calc.updated).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "")),
         path.length > 0 && mtH("div", { className: "flex flex-wrap items-center gap-1 text-xs" },
             mtH("button", { onClick: () => setPath([]), className: "px-2 py-1 rounded bg-white border border-stone-200 text-blue-900 font-semibold" }, "Início"),
@@ -4201,14 +4381,16 @@ function FulfilmentView({ scope } = {}) {
                 mtH("span", { className: "text-stone-400" }, "›"),
                 mtH("button", { onClick: () => setPath(path.slice(0, i + 1)), className: `px-2 py-1 rounded border font-semibold ${i === path.length - 1 ? "bg-blue-900 text-white border-blue-900" : "bg-white border-stone-200 text-blue-900"}` }, (p.k === "ch" ? mtChannelLabel(p.val) : p.val) || "(sem nome)")))),
         mtH("div", { className: "bg-stone-900 text-white rounded-2xl p-4" },
-            mtH("div", { className: "text-stone-400 text-xs" }, calc.sm.map(mtMonthLabel).join(" + ") + (path.length ? " · " + (path[path.length - 1].k === "ch" ? mtChannelLabel(path[path.length - 1].val) : path[path.length - 1].val) : restricted ? " · Equipa de " + scope.name : " · Toda a empresa")),
+            mtH("div", { className: "text-stone-400 text-xs" }, calc.sm.map(mtMonthLabel).join(" + ") + (path.length ? " · " + (path[path.length - 1].k === "ch" ? mtChannelLabel(path[path.length - 1].val) : path[path.length - 1].val) : chans.length ? " · " + (chans.length <= 2 ? chans.map((c) => mtChannelLabel(c === "OUTROS" ? "" : c)).join(" + ") : chans.length + " canais") : restricted ? " · Equipa de " + scope.name : " · Toda a empresa")),
             mtH("div", { className: "flex items-end justify-between gap-2 mt-1" },
                 mtH("div", null, mtH("div", { className: "text-[10px] text-stone-400 uppercase tracking-wide font-semibold" }, "Faturado / Vendas"), mtH("div", { className: `text-3xl font-bold text-${tone(p0)}-400` }, p0.toLocaleString("pt-PT") + "%"))),
             mtH("div", { className: "grid grid-cols-3 gap-2 mt-3" },
                 [["Vendas", calc.tot[0]], ["Faturado", calc.tot[1]], ["Por faturar", Math.max(0, calc.tot[0] - calc.tot[1])]].map(([l, v]) => mtH("div", { key: l, className: "bg-stone-800 rounded-xl p-2" },
                     mtH("div", { className: "text-[9px] text-stone-400 uppercase tracking-wide font-semibold" }, l),
                     mtH("div", { className: "text-[12px] font-bold mt-0.5" }, unit === "kz" ? (v / 1e6).toLocaleString("pt-PT", { maximumFractionDigits: 1 }) + " M Kz" : F(v)))))),
+        mtH(ResumoTable, null),
         nextLevel && mtH(List, { title: levelTitle + (nextLevel[0] === "seller" ? "" : " · toque para abrir"), entries: Object.entries(calc.byLevel), label: (k) => (nextLevel[0] === "ch" ? mtChannelLabel(k) : k), onPick: (k) => k !== "(sem vendedor)" && setPath([...path, { k: nextLevel[0], val: k }]) }),
+        Object.keys(calc.byBrand).length > 1 && mtH(List, { title: "Por marca", entries: Object.entries(calc.byBrand), label: (k) => k }),
         cats.length !== 1 && mtH(List, { title: "Por categoria · toque para filtrar", entries: Object.entries(calc.byCat), label: (k) => k, onPick: (k) => setCats([k]) }),
         mtH(MtOrderSearch, { months: idx, all, items, sellerOk: restricted ? inScope : null, noKz: restricted }),
         selProd && mtH(MtProductFul, { code: selProd, calc, items, unit, F, noKz: restricted, onClose: () => setSelProd(null) }),

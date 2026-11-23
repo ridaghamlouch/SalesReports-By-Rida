@@ -306,7 +306,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-23-canal-marca";
+const APP_BUILD = "2026-11-23-marca-subcategoria";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -2889,7 +2889,8 @@ function CompanySales() {
         rows.forEach((r) => {
             if (!pass(r)) return;
             const it = items[r[1]], v = { kz: r[3] || 0, t: val(r, it, "t"), cx: r[2] }, c = chOf(r[0]) || "OUTROS", b = brandOf(r[1]);
-            [b, b + "\u0001" + ((it && it.c) || "SEM CATEGORIA")].forEach((k) => { const o = brandCh[k] || (brandCh[k] = {}), x = o[c] || (o[c] = { kz: 0, t: 0, cx: 0 }); x.kz += v.kz; x.t += v.t; x.cx += v.cx; });
+            const ck = b + "\u0001" + ((it && it.c) || "SEM CATEGORIA");
+            [b, ck, ck + "\u0001" + ((it && it.s) || "SEM SUBCATEGORIA")].forEach((k) => { const o = brandCh[k] || (brandCh[k] = {}), x = o[c] || (o[c] = { kz: 0, t: 0, cx: 0 }); x.kz += v.kz; x.t += v.t; x.cx += v.cx; });
         });
         const channels = [...new Set(Object.values(all).flat().map((r) => chOf(r[0])).filter(Boolean))].sort();
         const levelTitle = nextLevel ? { mgr: "Por gestor", ch: "Por canal", sup: "Por supervisor", seller: "Por vendedor" }[nextLevel[0]] : "";
@@ -3101,26 +3102,33 @@ function CompanySales() {
         const cells = (k, cls) => [...cols.map((c) => mtH("td", { key: c, className: td + " " + cls }, pc ? (cell(k, c) ? share(cell(k, c), chTot[c]) : "") : num(cell(k, c)))), multiCol && mtH("td", { key: "_t", className: td + " font-semibold " + cls }, pc ? share(sumK(k), G) : num(sumK(k))), !pc && mtH("td", { key: "_p", className: td + " text-stone-400 font-normal " + cls }, G ? Math.round(sumK(k) / G * 100) + "%" : ""), vsAnt(k, cls)];
         const exportB = () => {
             const uL = unit === "kz" ? "Kz" : unit === "t" ? "Toneladas" : "Caixas", r2 = (n) => unit === "t" ? Math.round(n * 100) / 100 : Math.round(n);
-            const head = ["Marca", "Categoria"].concat(cols.map((c) => mtChannelLabel(c === "OUTROS" ? "" : c) + " (" + uL + ")"), ["Total (" + uL + ")", "% do total"], hasPrev ? [monthsLabel(calc.prevMs) + " (" + uL + ")"] : []);
-            const a1 = [head], a2 = [["Marca", "Categoria"].concat(cols.map((c) => mtChannelLabel(c === "OUTROS" ? "" : c) + " (% do canal)"), ["Total (% do total)"])];
-            brands.forEach((b) => [b].concat(Object.keys(data).filter((k) => k.startsWith(b + SEP) && sumK(k) !== 0).sort((x, y) => sumK(y) - sumK(x))).forEach((k) => {
+            const head = ["Marca", "Categoria", "Subcategoria"].concat(cols.map((c) => mtChannelLabel(c === "OUTROS" ? "" : c) + " (" + uL + ")"), ["Total (" + uL + ")", "% do total"], hasPrev ? [monthsLabel(calc.prevMs) + " (" + uL + ")"] : []);
+            const a1 = [head], a2 = [["Marca", "Categoria", "Subcategoria"].concat(cols.map((c) => mtChannelLabel(c === "OUTROS" ? "" : c) + " (% do canal)"), ["Total (% do total)"])];
+            brands.forEach((b) => [b].concat(...kidsOf(b).map((c) => [c].concat(kidsOf(c)))).forEach((k) => {
                 const nm = k.split(SEP);
-                a1.push([nm[0], nm[1] || "(todas)"].concat(cols.map((c) => r2(cell(k, c))), [r2(sumK(k)), G ? Math.round(sumK(k) / G * 1000) / 10 : 0], hasPrev ? [k.indexOf(SEP) < 0 ? r2(pv(k)) : ""] : []));
-                a2.push([nm[0], nm[1] || "(todas)"].concat(cols.map((c) => chTot[c] ? Math.round(cell(k, c) / chTot[c] * 1000) / 10 : 0), [G ? Math.round(sumK(k) / G * 1000) / 10 : 0]));
+                a1.push([nm[0], nm[1] || "(todas)", nm[2] || (nm[1] ? "(todas)" : "")].concat(cols.map((c) => r2(cell(k, c))), [r2(sumK(k)), G ? Math.round(sumK(k) / G * 1000) / 10 : 0], hasPrev ? [k.indexOf(SEP) < 0 ? r2(pv(k)) : ""] : []));
+                a2.push([nm[0], nm[1] || "(todas)", nm[2] || (nm[1] ? "(todas)" : "")].concat(cols.map((c) => chTot[c] ? Math.round(cell(k, c) / chTot[c] * 1000) / 10 : 0), [G ? Math.round(sumK(k) / G * 1000) / 10 : 0]));
             }));
-            a1.push(["Total", ""].concat(cols.map((c) => r2(chTot[c])), [r2(G), 100]));
+            a1.push(["Total", "", ""].concat(cols.map((c) => r2(chTot[c])), [r2(G), 100]));
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a1), "Marca e canal");
             XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a2), "% do canal");
             XLSX.writeFile(wb, "Vendas_marca_canal_" + calc.sm.join("_") + ".xlsx");
         };
         const body = [];
+        // children of a row: brand -> its categories, category -> its subcategories
+        const kidsOf = (pre) => Object.keys(data).filter((k) => k.startsWith(pre + SEP) && k.split(SEP).length === pre.split(SEP).length + 1 && sumK(k) !== 0).sort((x, y) => sumK(y) - sumK(x));
         brands.forEach((b) => {
             const oid = "brand\u0002" + b, isOpen = openT.includes(oid);
             body.push(mtH("tr", { key: b, onClick: () => setOpenT(isOpen ? openT.filter((x) => x !== oid) : [...openT, oid]), className: "cursor-pointer font-bold text-stone-900" },
                 mtH("td", { className: first + " bg-white border-t border-stone-200" }, mtH("span", { className: "text-blue-600" }, isOpen ? "\u25BE " : "\u25B8 "), b), ...cells(b, "bg-white border-t border-stone-200")));
-            if (isOpen) Object.keys(data).filter((k) => k.startsWith(b + SEP) && sumK(k) !== 0).sort((x, y) => sumK(y) - sumK(x)).forEach((k) => body.push(mtH("tr", { key: k, className: "text-stone-600" },
-                mtH("td", { className: first + " bg-slate-50 pl-5" }, k.split(SEP)[1]), ...cells(k, "bg-slate-50"))));
+            if (isOpen) kidsOf(b).forEach((k) => {
+                const cid = "brand\u0002" + k, cOpen = openT.includes(cid), subs = kidsOf(k);
+                body.push(mtH("tr", { key: k, onClick: subs.length ? () => setOpenT(cOpen ? openT.filter((x) => x !== cid) : [...openT, cid]) : undefined, className: (subs.length ? "cursor-pointer " : "") + "font-semibold text-stone-700" },
+                    mtH("td", { className: first + " bg-slate-50 pl-5" }, subs.length ? mtH("span", { className: "text-blue-600" }, cOpen ? "\u25BE " : "\u25B8 ") : null, k.split(SEP)[1]), ...cells(k, "bg-slate-50")));
+                if (cOpen) subs.forEach((sk) => body.push(mtH("tr", { key: sk, className: "text-stone-500 text-[10.5px]" },
+                    mtH("td", { className: first + " bg-slate-100 pl-8" }, sk.split(SEP)[2]), ...cells(sk, "bg-slate-100"))));
+            });
         });
         return mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
             mtH("div", { className: "flex justify-between items-baseline px-3 pt-3 pb-2" },

@@ -306,7 +306,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-23-marca-subcategoria";
+const APP_BUILD = "2026-11-23-meta-vs-encomendas";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -4427,6 +4427,202 @@ function FulfilmentView({ scope } = {}) {
                         mtH("div", { className: "text-[10px] text-stone-400" }, mtFmt(o.q) + " cx")))),
             pendList.length > topP && mtH("button", { onClick: () => setTopP(topP + 50), className: "w-full text-sm text-blue-900 font-semibold py-2" }, "Ver mais")));
 }
+// ======================= META vs ENCOMENDADO vs FATURADO (Admin / Direção) =======================
+// Shows whether a gap to the target comes from sales (not ordered) or from fulfilment (ordered but not invoiced).
+// Meta = metas_targets (forecast split per salesperson, boxes); Encomendado / Faturado = Sales Fulfilment (ful-YYYY-MM).
+// Boxes and tons only (the targets have no Kz).
+function MtMetaVsFul() {
+    const [months, setMonths] = useState(null); // all months with a target or fulfilment
+    const [tg, setTg] = useState({}); // month -> target rows
+    const [fc, setFc] = useState({}); // month -> forecast total boxes
+    const [ful, setFul] = useState({}); // month -> { agg, updated }
+    const [items, setItems] = useState({});
+    const [team, setTeam] = useState({});
+    const [prodBrand, setProdBrand] = useState({});
+    const [err, setErr] = useState(null);
+    const [selMonths, setSelMonths] = useState([]);
+    const [chans, setChans] = useState([]);
+    const [cats, setCats] = useState([]);
+    const [brands, setBrands] = useState([]);
+    const [unit, setUnit] = useState("cx");
+    const [view, setView] = useState("eq"); // "eq" = canal > supervisor > vendedor, "cat" = categoria > subcategoria > produto
+    const [openR, setOpenR] = useState([]);
+    useEffect(() => {
+        let dead = false;
+        (async () => {
+            try {
+                const [ix, fi, it, tm] = await Promise.all([mtIndex(true), mtGet("metas_sales/ful-index", true), mtItems(true), mtTeam(true)]);
+                const tMs = (ix.targetMonths || []).slice(), fMs = ((fi && fi.rows) || []).slice();
+                const ms = [...new Set(tMs.concat(fMs))].sort();
+                const [tds, fds, fcs] = await Promise.all([
+                    Promise.all(tMs.map((m) => mtGet("metas_targets/" + m, true))),
+                    Promise.all(fMs.map((m) => mtGet("metas_sales/ful-" + m, true))),
+                    Promise.all(tMs.map((m) => mtGet("metas_forecast/" + m, false).catch(() => null)))]);
+                if (dead) return;
+                const T = {}, F = {}, FC = {};
+                tMs.forEach((m, k) => { T[m] = (tds[k] && tds[k].rows) || []; FC[m] = ((fcs[k] && fcs[k].rows) || []).reduce((a, r) => a + (r[1] > 0 ? r[1] : 0), 0); });
+                fMs.forEach((m, k) => { const rs = (fds[k] && fds[k].rows) || []; F[m] = { agg: rs.filter((r) => r[0] === "A"), updated: fds[k] && fds[k].updated }; });
+                setTg(T); setFul(F); setFc(FC); setItems(it); setTeam(tm); setMonths(ms);
+                // default: the latest month that has a target
+                const last = tMs.sort().slice(-1)[0] || ms.slice(-1)[0];
+                setSelMonths(last ? [last] : []);
+                try {
+                    const pc = await fsGetDoc("products/current"), pb = {};
+                    ((pc && pc.data) || []).forEach((p) => { const c = mtCode(p.code), b = mtNorm(p.brand); if (c && b) pb[c] = b; });
+                    if (!dead) setProdBrand(pb);
+                } catch (e) { }
+            } catch (e) { if (!dead) setErr(String(e.message || e)); }
+        })();
+        return () => { dead = true; };
+    }, []);
+    const chOf = (s) => (team[s] && team[s].ch) || "OUTROS";
+    const supOf = (s) => (team[s] && team[s].sup) || "";
+    const brandOf = (code) => (items[code] && items[code].b) || prodBrand[code] || "SEM MARCA";
+    const catOf = (code) => (items[code] && items[code].c) || "SEM CATEGORIA";
+    const calc = useMemo(() => {
+        if (!months || !selMonths.length) return null;
+        const sm = selMonths.slice().sort();
+        const okS = (s) => !chans.length || chans.includes(chOf(s));
+        const okI = (code) => (!cats.length || cats.includes(catOf(code))) && (!brands.length || brands.includes(brandOf(code)));
+        const tons = (code, q) => { const it = items[code]; return it && it.w > 0 ? (q * it.w) / 1000 : 0; };
+        const SEP = "\u0001";
+        // key -> [meta, encomendado, faturado]
+        const T = {}, tot = [0, 0, 0];
+        const keysOf = (s, code) => {
+            if (view === "eq") { const c = chOf(s), su = supOf(s) || "(sem supervisor)"; return [c, c + SEP + su, c + SEP + su + SEP + (s || "(sem vendedor)")]; }
+            const it = items[code] || {}, c = catOf(code), sb = c + SEP + (it.s || "SEM SUBCATEGORIA"); return [c, sb, sb + SEP + code];
+        };
+        const add = (s, code, i, v) => { if (!v) return; keysOf(s, code).forEach((k) => { const x = T[k] || (T[k] = [0, 0, 0]); x[i] += v; }); tot[i] += v; };
+        sm.forEach((m) => {
+            (tg[m] || []).forEach(([s, code, q]) => { if (!okS(s) || !okI(code)) return; add(s, code, 0, unit === "cx" ? q : tons(code, q)); });
+            ((ful[m] && ful[m].agg) || []).forEach((r) => {
+                if (!okS(r[1]) || !okI(r[2])) return;
+                add(r[1], r[2], 1, unit === "cx" ? r[3] : (r[7] || tons(r[2], r[3])));
+                add(r[1], r[2], 2, unit === "cx" ? r[5] : (r[8] || tons(r[2], r[5])));
+            });
+        });
+        const allRows = [].concat(...Object.values(ful).map((o) => o.agg));
+        const chanList = [...new Set(allRows.map((r) => chOf(r[1])).concat(...Object.values(tg).map((rs) => rs.map((r) => chOf(r[0])))))].sort();
+        const catList = [...new Set(Object.values(items).map((i) => i.c).filter(Boolean))].sort();
+        const brandList = [...new Set(allRows.map((r) => brandOf(r[2])))].sort((a, b) => (a === "SEM MARCA") - (b === "SEM MARCA") || a.localeCompare(b));
+        const noTarget = sm.filter((m) => !tg[m]), noFul = sm.filter((m) => !ful[m]);
+        const fcTot = (chans.length || cats.length || brands.length) ? null : sm.reduce((a, m) => a + (fc[m] || 0), 0);
+        const ups = sm.map((m) => ful[m] && ful[m].updated).filter(Boolean).sort();
+        return { sm, T, tot, chanList, catList, brandList, noTarget, noFul, fcTot, updated: ups[ups.length - 1], SEP };
+    }, [months, tg, ful, fc, items, team, prodBrand, selMonths, chans, cats, brands, unit, view]);
+    if (err) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-rose-50 border border-rose-200 text-rose-800 text-sm rounded-lg p-3" }, err));
+    if (!months) return mtH("div", { className: "p-6 text-center text-stone-400 text-sm" }, "A carregar...");
+    if (!months.length) return mtH("div", { className: "p-4" }, mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-4 text-sm text-stone-500 text-center" }, "Ainda não há metas nem relatório de cumprimento importados."));
+    if (!calc) return mtH("div", { className: "p-6 text-center text-stone-400 text-sm" }, "Escolha um mês.");
+    const F = unit === "cx" ? (n) => mtFmt(n) + " cx" : (n) => mtFmtT(n) + " t";
+    const num = (n) => !n ? "" : unit === "cx" ? mtFmt(n) : n.toLocaleString("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    const pc = (a, b) => (b > 0 ? Math.round((a / b) * 1000) / 10 : null);
+    const pcS = (p) => (p == null ? "—" : p.toLocaleString("pt-PT") + "%");
+    const toneT = (p) => (p == null ? "stone" : p >= 100 ? "emerald" : p >= 85 ? "amber" : "rose"); // vs meta
+    const toneF = (p) => (p == null ? "stone" : p >= 98 ? "emerald" : p >= 90 ? "amber" : "rose"); // faturado / encomendado
+    // month in progress: project orders and invoices to the end of the month (pace so far)
+    const curM = mtThisMonth(), curOnly = calc.sm.length === 1 && calc.sm[0] === curM;
+    const dim = (() => { const [y, m] = curM.split("-").map(Number); return new Date(y, m, 0).getDate(); })();
+    const dom = (() => { const d = calc.updated ? new Date(calc.updated) : null; return d && localDateISO(d).slice(0, 7) === curM ? Math.max(1, d.getDate()) : new Date().getDate(); })();
+    const projF = curOnly ? dim / dom : 1;
+    const [M, E, I] = calc.tot, L = Math.max(0, E - I);
+    const pE = pc(E, M), pI = pc(I, M), pFI = pc(I, E);
+    // gap to target = not ordered (sales) + ordered but not invoiced (fulfilment)
+    const gap = Math.max(0, M - I), gapNotOrd = Math.max(0, M - E), gapUnful = Math.max(0, gap - gapNotOrd);
+    const SEP = calc.SEP;
+    const lbl = (k, d) => { const p = k.split(SEP)[d]; if (view === "eq") return d === 0 ? mtChannelLabel(p === "OUTROS" ? "" : p) : p; if (d === 2) return (items[p] && items[p].d) || p; return p; };
+    const kids = (pre) => Object.keys(calc.T).filter((k) => (pre == null ? k.indexOf(SEP) < 0 : k.startsWith(pre + SEP) && k.split(SEP).length === pre.split(SEP).length + 1)).filter((k) => calc.T[k].some((v) => v)).sort((a, b) => (calc.T[b][0] || calc.T[b][1]) - (calc.T[a][0] || calc.T[a][1]));
+    const td = "px-2 py-1.5 text-right whitespace-nowrap";
+    const first = "sticky left-0 z-[1] px-2 py-1.5 text-left whitespace-nowrap max-w-[170px] truncate shadow-[3px_0_4px_-3px_rgba(0,0,0,0.25)]";
+    const bg = ["bg-white", "bg-slate-50", "bg-slate-100"], pad = ["", " pl-5", " pl-8"];
+    const cells = (v, cls, tot) => {
+        const [m, e, i] = v, l = Math.max(0, e - i), a = pc(e * projF, m), b = pc(i, e);
+        const col = (t) => (tot ? "" : " text-" + t + "-600");
+        return [
+            mtH("td", { key: "m", className: td + " " + cls }, num(m)),
+            mtH("td", { key: "e", className: td + " " + cls }, num(e)),
+            mtH("td", { key: "pe", className: td + " font-bold " + cls + col(toneT(a)) }, a == null ? "" : pcS(a)),
+            mtH("td", { key: "i", className: td + " " + cls }, num(i)),
+            mtH("td", { key: "pi", className: td + " " + cls + col(toneT(pc(i, m))) }, pc(i, m) == null ? "" : pcS(pc(i, m))),
+            mtH("td", { key: "l", className: td + " " + cls + (l > 0 && !tot ? " text-rose-700" : "") }, l > 0 ? num(l) : "—"),
+            mtH("td", { key: "pf", className: td + " font-bold " + cls + col(toneF(b)) }, b == null ? "" : pcS(b))];
+    };
+    const body = [];
+    const addRow = (k, d) => {
+        const ch = d < 2 ? kids(k) : [], oid = view + "\u0002" + k, isOpen = openR.includes(oid), cls = bg[d] + (d ? "" : " border-t border-stone-200");
+        body.push(mtH("tr", { key: k, onClick: ch.length ? () => setOpenR(isOpen ? openR.filter((x) => x !== oid) : [...openR, oid]) : undefined, className: (ch.length ? "cursor-pointer " : "") + (d ? (d === 1 ? "font-semibold text-stone-700" : "text-stone-500 text-[10.5px]") : "font-bold text-stone-900") },
+            mtH("td", { className: first + " " + cls + pad[d] }, ch.length ? mtH("span", { className: "text-blue-600" }, isOpen ? "▾ " : "▸ ") : null, lbl(k, d) || "(sem nome)"), ...cells(calc.T[k], cls)));
+        if (isOpen) ch.forEach((c) => addRow(c, d + 1));
+    };
+    kids(null).forEach((k) => addRow(k, 0));
+    const exportX = () => {
+        const uL = unit === "cx" ? "cx" : "t", r2 = (n) => unit === "t" ? Math.round(n * 100) / 100 : Math.round(n);
+        const lv = view === "eq" ? ["Canal", "Supervisor", "Vendedor"] : ["Categoria", "Subcategoria", "Produto"];
+        const a = [lv.concat(["Meta (" + uL + ")", "Encomendado (" + uL + ")", "% Enc./Meta", "Faturado (" + uL + ")", "% Fat./Meta", "Por faturar (" + uL + ")", "% Fat./Enc."])];
+        const walk = (k, d) => { const v = calc.T[k], nm = [0, 1, 2].map((i) => (i <= d ? lbl(k, i) : "(todos)")); a.push(nm.concat([r2(v[0]), r2(v[1]), pc(v[1], v[0]) == null ? "" : pc(v[1], v[0]), r2(v[2]), pc(v[2], v[0]) == null ? "" : pc(v[2], v[0]), r2(Math.max(0, v[1] - v[2])), pc(v[2], v[1]) == null ? "" : pc(v[2], v[1])])); if (d < 2) kids(k).forEach((c) => walk(c, d + 1)); };
+        kids(null).forEach((k) => walk(k, 0));
+        a.push(["Total", "", ""].concat([r2(M), r2(E), pE == null ? "" : pE, r2(I), pI == null ? "" : pI, r2(L), pFI == null ? "" : pFI]));
+        const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(a), "Meta vs Encomendado");
+        XLSX.writeFile(wb, "Meta_vs_Encomendado_" + calc.sm.join("_") + ".xlsx");
+    };
+    const seg = (v, cls) => mtH("div", { className: cls, style: { width: (M > 0 ? Math.min(100, v / Math.max(M, E) * 100) : 0) + "%" } });
+    const bigCard = (l, p, t, sub) => mtH("div", { className: "bg-stone-800 rounded-xl p-2" },
+        mtH("div", { className: "text-[9px] text-stone-400 uppercase tracking-wide font-semibold leading-tight" }, l),
+        mtH("div", { className: "text-lg font-bold text-" + t + "-400" }, pcS(p)),
+        mtH("div", { className: "text-[10px] text-stone-400 leading-tight" }, sub));
+    const filterLbl = [chans.length ? (chans.length <= 2 ? chans.map((c) => mtChannelLabel(c === "OUTROS" ? "" : c)).join(" + ") : chans.length + " canais") : "Toda a empresa", cats.length ? (cats.length <= 2 ? cats.join(" + ") : cats.length + " categorias") : "", brands.length ? (brands.length <= 2 ? brands.join(" + ") : brands.length + " marcas") : ""].filter(Boolean).join(" · ");
+    return mtH("div", { className: "p-4 flex flex-col gap-3" },
+        mtH("div", { className: "flex bg-white border border-stone-200 rounded-xl p-1 gap-1" },
+            [["cx", "Caixas"], ["t", "Toneladas"]].map(([k, l]) => mtH("button", { key: k, onClick: () => setUnit(k), className: `flex-1 py-2 rounded-lg text-sm font-semibold ${unit === k ? "bg-blue-900 text-white" : "text-stone-600"}` }, l))),
+        mtH("div", { className: "bg-white border border-stone-200 rounded-xl p-3 flex flex-col gap-2" },
+            mtH("div", { className: "flex gap-2" },
+                mtH(MtMultiSelect, { label: "Mês", values: selMonths, onChange: setSelMonths, required: true, options: months.slice().reverse().map((m) => [m, mtMonthLabel(m)]) }),
+                mtH(MtMultiSelect, { label: "Canal", values: chans, onChange: (v) => { setChans(v); setOpenR([]); }, allLabel: "Todos", options: calc.chanList.map((c) => [c, mtChannelLabel(c === "OUTROS" ? "" : c)]) })),
+            mtH("div", { className: "flex gap-2" },
+                mtH(MtMultiSelect, { label: "Categoria", values: cats, onChange: setCats, allLabel: "Todas", options: calc.catList.map((c) => [c, c]) }),
+                calc.brandList.length > 1 && mtH(MtMultiSelect, { label: "Marca", values: brands, onChange: setBrands, allLabel: "Todas", options: calc.brandList.map((b) => [b, b]) })),
+            mtH("div", { className: "text-[11px] text-stone-400" }, calc.updated ? "Cumprimento SAP importado em " + new Date(calc.updated).toLocaleString("pt-PT", { dateStyle: "short", timeStyle: "short" }) : "")),
+        (calc.noTarget.length > 0 || calc.noFul.length > 0) && mtH("div", { className: "text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2" },
+            (calc.noTarget.length ? "Sem metas para " + calc.noTarget.map(mtMonthLabel).join(", ") + ". " : "") + (calc.noFul.length ? "Sem relatório de cumprimento para " + calc.noFul.map(mtMonthLabel).join(", ") + "." : "")),
+        mtH("div", { className: "bg-stone-900 text-white rounded-2xl p-4" },
+            mtH("div", { className: "text-stone-400 text-xs" }, calc.sm.map(mtMonthLabel).join(" + ") + (curOnly ? " (em curso)" : "") + " · " + filterLbl),
+            mtH("div", { className: "grid grid-cols-3 gap-2 mt-2" },
+                bigCard("Encomendado / Meta", pE, toneT(pE), "vendas"),
+                bigCard("Faturado / Encomendado", pFI, toneF(pFI), "entregas"),
+                bigCard("Faturado / Meta", pI, toneT(pI), "resultado")),
+            mtH("div", { className: "grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] mt-3" },
+                mtH("span", { className: "text-stone-400" }, "Meta"), mtH("span", { className: "text-right font-semibold" }, F(M)),
+                calc.fcTot != null && calc.fcTot !== M && mtH("span", { className: "text-stone-500" }, "Previsão (forecast)"), calc.fcTot != null && calc.fcTot !== M && mtH("span", { className: "text-right text-stone-400" }, unit === "cx" ? F(calc.fcTot) : "—"),
+                mtH("span", { className: "text-stone-400" }, "Encomendado"), mtH("span", { className: "text-right font-semibold" }, F(E)),
+                mtH("span", { className: "text-stone-400" }, "Faturado"), mtH("span", { className: "text-right font-semibold text-emerald-400" }, F(I)),
+                mtH("span", { className: "text-stone-400" }, "Por faturar"), mtH("span", { className: "text-right font-semibold text-rose-400" }, F(L))),
+            M > 0 && mtH("div", { className: "mt-3" },
+                mtH("div", { className: "h-2 bg-stone-700 rounded-full overflow-hidden flex" }, seg(I, "h-full bg-emerald-500"), seg(L, "h-full bg-rose-500")),
+                mtH("div", { className: "flex gap-3 text-[10px] text-stone-400 mt-1" },
+                    mtH("span", null, mtH("span", { className: "text-emerald-400" }, "■"), " faturado"), mtH("span", null, mtH("span", { className: "text-rose-400" }, "■"), " por faturar"), mtH("span", null, mtH("span", { className: "text-stone-500" }, "■"), " falta encomendar"))),
+            M > 0 && gap > 0 && mtH("div", { className: "text-[11px] text-stone-300 mt-2 leading-snug" },
+                "Faltam " + F(gap) + " para a meta: ",
+                mtH("b", { className: "text-rose-400" }, F(gapUnful) + " encomendado e por faturar"), " (entregas) e ",
+                mtH("b", { className: "text-amber-400" }, F(gapNotOrd) + " não encomendado"), " (vendas)."),
+            curOnly && M > 0 && mtH("div", { className: "text-[11px] text-stone-300 mt-2 border-t border-stone-700 pt-2" },
+                "Até dia " + dom + " de " + dim + " · ritmo do mês: encomendado ≈ " + F(E * projF) + " (" + pcS(pc(E * projF, M)) + " da meta), faturado ≈ " + F(I * projF) + " (" + pcS(pc(I * projF, M)) + ")")),
+        mtH("div", { className: "bg-white border border-stone-200 rounded-xl overflow-hidden" },
+            mtH("div", { className: "flex items-center gap-2 px-3 pt-3 pb-2" },
+                mtH("div", { className: "flex bg-stone-100 rounded-lg p-1 gap-1" },
+                    [["eq", "Equipa"], ["cat", "Categoria"]].map(([k, l]) => mtH("button", { key: k, onClick: () => { setView(k); setOpenR([]); }, className: `px-3 py-1 rounded-md text-xs font-semibold ${view === k ? "bg-blue-900 text-white" : "text-stone-600"}` }, l))),
+                mtH("span", { className: "text-[10px] text-stone-400" }, unit === "cx" ? "Caixas" : "Toneladas"),
+                mtH("button", { onClick: exportX, className: "ml-auto text-xs font-semibold text-emerald-700 border border-emerald-600 rounded-lg px-2.5 py-1 active:bg-emerald-50" }, "⬇ Excel")),
+            mtH("div", { "data-hscroll": "1", className: "overflow-x-auto overflow-y-hidden", style: { overflowX: "auto", overflowY: "hidden", overscrollBehaviorX: "none", WebkitOverflowScrolling: "touch" } },
+                mtH("table", { className: "w-full text-[11px] border-separate", style: { borderSpacing: 0 } },
+                    mtH("thead", null, mtH("tr", { className: "bg-blue-900 text-white" },
+                        mtH("th", { className: first + " bg-blue-900 font-semibold" }, view === "eq" ? "Canal / Equipa" : "Categoria"),
+                        ["Meta", "Encomend.", curOnly ? "% ritmo" : "% meta", "Faturado", "% meta", "Por faturar", "% fat."].map((h, i) => mtH("th", { key: i, className: td + " font-semibold" }, h)))),
+                    mtH("tbody", null, ...body,
+                        mtH("tr", { key: "_tot", className: "font-bold text-white" },
+                            mtH("td", { className: first + " bg-blue-900" }, "Total"), ...cells(calc.tot, "bg-blue-900", true))))),
+            mtH("div", { className: "text-[10px] text-stone-400 px-3 py-2 leading-snug" },
+                "Meta = previsão dividida pelos vendedores (Metas). Encomendado = encomendas SAP “Completely” e “Partially processed”. % fat. = faturado / encomendado (entregas). " + (curOnly ? "% ritmo = encomendado projetado ao fim do mês / meta. " : "") + "Toque numa linha para abrir.")));
+}
 // ======================= ROTAS: lista completa de clientes, prioridades do dia, cobertura =======================
 // The client list (Admin -> Metas de vendas -> Importar -> Lista de clientes) can carry Market and Route Day.
 // Then it also becomes the route list of every channel (clients/current): clients with a Route Day appear on
@@ -7224,6 +7420,7 @@ function RouteApp() {
             case "company-sales":
             case "company-debts":
             case "company-ful":
+            case "company-mvf":
                 setScreen(ownerAuthed ? "owner-panel" : "admin-panel");
                 break;
             case "admin-gate":
@@ -7565,15 +7762,15 @@ function RouteApp() {
     // big = the tiles inside the admin "today" card; otherwise the compact tab row of the shell
     const renderTiles = (tabs, active, big) => React.createElement("div", { className: (big ? "border-t border-stone-700 mt-4 pt-3 gap-2 " : "mt-2.5 gap-1.5 ") + "grid " + (tabs.length === 5 ? "grid-cols-5" : "grid-cols-12") }, tabs.map(([k, ic, l], i) => {
         const on = k === active;
-        const span = tabs.length === 5 ? "" : (i < 4 ? " col-span-3" : " col-span-4");
+        const span = tabs.length === 5 ? "" : tabs.length === 6 ? " col-span-4" : (i < 4 ? " col-span-3" : " col-span-4");
         return React.createElement("button", { key: k, onClick: () => shellGo(k, active), className: "relative rounded-xl px-0.5 flex flex-col items-center " + (big ? "py-2.5 gap-1" : "py-2 gap-0.5") + span + " " + (on ? "bg-amber-500 text-stone-900" : k === "admin-visit-pick" ? "bg-emerald-600 text-white active:bg-emerald-700" : "bg-stone-800 text-white active:bg-stone-700") },
             k === "admin-focus" && activeFocusProducts.length > 0 && React.createElement("span", { className: "absolute top-0.5 right-1 text-[9px] font-bold bg-amber-500 text-stone-900 rounded-full px-1" }, activeFocusProducts.length),
             React.createElement("span", { className: (big ? "text-xl" : "text-lg") + " leading-none" }, ic),
             React.createElement("span", { className: (big ? "text-[10.5px]" : "text-[10px]") + " font-semibold leading-tight text-center" }, l));
     }));
-    const SHELL_DIR = [["owner-panel", "\uD83C\uDFE0", "Resumo"], ["company-sales", "\uD83D\uDCC8", "Vendas"], ["metas-home", "\uD83C\uDFAF", "Metas"], ["company-debts", "\uD83D\uDCB0", "D\u00EDvidas"], ["company-ful", "\uD83E\uDDFE", "Cumprimento"]];
+    const SHELL_DIR = [["owner-panel", "\uD83C\uDFE0", "Resumo"], ["company-sales", "\uD83D\uDCC8", "Vendas"], ["metas-home", "\uD83C\uDFAF", "Metas"], ["company-debts", "\uD83D\uDCB0", "D\u00EDvidas"], ["company-ful", "\uD83E\uDDFE", "Cumprimento"], ["company-mvf", "\uD83D\uDCCA", "Meta vs Enc."]];
     const shellOf = () => {
-        if (ownerAuthed && (["owner-panel", "company-sales", "company-debts", "company-ful"].includes(screen) || (screen === "metas-home" && metasScope && metasScope.kind === "all"))) return "dir";
+        if (ownerAuthed && (["owner-panel", "company-sales", "company-debts", "company-ful", "company-mvf"].includes(screen) || (screen === "metas-home" && metasScope && metasScope.kind === "all"))) return "dir";
         if (adminAuthed && !isTestSession && ["admin-visit-pick", "admin-visit-detail", "admin-reports", "admin-metas", "admin-import", "import", "admin-focus", "import-products", "admin-my-visits"].includes(screen)) return "admin";
         return null;
     };
@@ -7833,6 +8030,15 @@ function RouteApp() {
         return (React.createElement("div", { className: "min-h-full bg-stone-50 pb-8" },
             React.createElement(BackHeader, { title: isDebts ? "D\u00EDvidas de Clientes" : "Cumprimento", subtitle: isDebts ? "Aging SAP \u2014 todos os canais" : "Vendas vs faturado \u2014 Sales Fulfilment SAP", onBack: () => setScreen(ownerAuthed ? "owner-panel" : "admin-panel") }),
             isDebts ? React.createElement(DebtsView, { scope: { kind: "all", name: "Dire\u00E7\u00E3o" } }) : React.createElement(FulfilmentView, null)));
+    }
+    if (screen === "company-mvf") {
+        if (!ownerAuthed && !adminAuthed) {
+            setScreen("home");
+            return null;
+        }
+        return (React.createElement("div", { className: "min-h-full bg-stone-50 pb-8" },
+            React.createElement(BackHeader, { title: "Meta vs Encomendas", subtitle: "Meta \u00b7 encomendado \u00b7 faturado \u00b7 por faturar", onBack: () => setScreen(ownerAuthed ? "owner-panel" : "admin-panel") }),
+            React.createElement(MtMetaVsFul, null)));
     }
     if (screen === "company-sales") {
         if (!ownerAuthed && !adminAuthed) {
@@ -8387,6 +8593,7 @@ function RouteApp() {
             { id: "vendas", label: "Vendas da Empresa" },
             { id: "dividas", label: "Dívidas de Clientes" },
             { id: "cumprimento", label: "Cumprimento" },
+            { id: "metavs", label: "\uD83C\uDFAF Meta vs Encomendas" },
             { id: "atraso", label: "Clientes em Atraso" },
             { id: "encomendas", label: "Todas as Encomendas" },
             { id: "foco", label: "⭐ Produtos Foco" },
@@ -8632,6 +8839,7 @@ function RouteApp() {
             activeAdminReportTab === "vendas" && React.createElement(CompanySales, null),
             activeAdminReportTab === "dividas" && React.createElement(DebtsView, { scope: { kind: "all", name: "Administração" } }),
             activeAdminReportTab === "cumprimento" && React.createElement(FulfilmentView, null),
+            activeAdminReportTab === "metavs" && React.createElement(MtMetaVsFul, null),
             activeAdminReportTab === "atraso" && renderAtraso(),
             activeAdminReportTab === "encomendas" && renderEncomendas(),
             activeAdminReportTab === "foco" && React.createElement(MtFocusReport, { clients, people: (() => { const seen = {}, out = []; const push = (p) => { const k = p.coll + "|" + p.slug; if (!p.slug || seen[k]) return; seen[k] = 1; out.push(p); }; Object.entries(usedRoster).forEach(([sup, reps]) => { reps.forEach((r) => push({ coll: "visits", slug: r.slug, name: r.name, role: "rep" })); push({ coll: "sup_visits", slug: slugify(sup), name: sup, role: "sup" }); }); return out; })() })));

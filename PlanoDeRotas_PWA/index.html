@@ -6751,6 +6751,42 @@ function RouteApp() {
     // high-accuracy GPS fix. The first fix that is precise enough wins; otherwise a few seconds after
     // the first fix arrives we settle for the best one we have. An error is reported only if neither
     // method produced a position (or the permission is denied, which needs no waiting).
+    // Location warm-up. While a salesperson or supervisor has their dashboard open, the phone keeps
+    // tracking location quietly in the background, so by the time they reach the shop and tap
+    // "Iniciar Visita" a fresh fix is usually already waiting and the visit starts instantly.
+    // Tracking stops when they leave the dashboard or the app goes to the background (saves battery).
+    const gpsWarmRef = useRef(null); // { lat, lng, accuracy, at }
+    const rememberFix = (fix) => {
+        const prev = gpsWarmRef.current;
+        const now = Date.now();
+        // Keep the newer fix, unless the previous one is only seconds old and clearly more precise.
+        if (prev && now - prev.at < 20000 && prev.accuracy < fix.accuracy)
+            return;
+        gpsWarmRef.current = Object.assign({}, fix, { at: now });
+    };
+    useEffect(() => {
+        if (!navigator.geolocation || (screen !== "rep-dash" && screen !== "sup-dash"))
+            return;
+        let watchId = null;
+        const start = () => {
+            if (watchId != null || document.visibilityState !== "visible")
+                return;
+            try {
+                watchId = navigator.geolocation.watchPosition((pos) => rememberFix({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) }), () => { }, { enableHighAccuracy: true, maximumAge: 30000, timeout: 60000 });
+            }
+            catch (e) { watchId = null; }
+        };
+        const stop = () => {
+            if (watchId != null) {
+                try { navigator.geolocation.clearWatch(watchId); } catch (e) { }
+                watchId = null;
+            }
+        };
+        const onVis = () => (document.visibilityState === "visible" ? start() : stop());
+        start();
+        document.addEventListener("visibilitychange", onVis);
+        return () => { document.removeEventListener("visibilitychange", onVis); stop(); };
+    }, [screen]);
     const captureGPS = () => new Promise((resolve) => {
         if (!navigator.geolocation)
             return resolve({ gps: null, errorCode: null });
@@ -6758,6 +6794,14 @@ function RouteApp() {
         const GRACE_MS = 6000;
         const HARD_LIMIT_MS = 35000;
         const SLOW_HINT_MS = 10000;
+        const WARM_INSTANT_MS = 30000; // a precise warm-up fix this recent is used straight away (no older fallback, to keep visits tied to the real shop)
+        const warmFix = (maxAge) => {
+            const w = gpsWarmRef.current;
+            return w && Date.now() - w.at <= maxAge ? { lat: w.lat, lng: w.lng, accuracy: w.accuracy } : null;
+        };
+        const instant = warmFix(WARM_INSTANT_MS);
+        if (instant && instant.accuracy <= GOOD_ENOUGH_METERS)
+            return resolve({ gps: instant, errorCode: null });
         let best = null, lastError = null, pending = 2, done = false, graceTimer = null;
         const hardTimer = setTimeout(() => finish(), HARD_LIMIT_MS);
         const slowTimer = setTimeout(() => setGpsSlow(true), SLOW_HINT_MS);
@@ -6777,6 +6821,7 @@ function RouteApp() {
             if (done)
                 return;
             const fix = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) };
+            rememberFix(fix);
             if (!best || fix.accuracy < best.accuracy)
                 best = fix;
             if (best.accuracy <= GOOD_ENOUGH_METERS)
@@ -6800,8 +6845,8 @@ function RouteApp() {
         if (errorCode === 1)
             return "A localização está bloqueada para esta app. iPhone: Definições > Privacidade e Segurança > Serviços de Localização > Safari (Websites) > \"Ao Usar a App\". Android: Definições > Apps > Chrome > Permissões > Localização > Permitir. Depois feche e abra a app outra vez.";
         if (errorCode === 3)
-            return "Não foi possível obter a localização a tempo. Verifique se a localização e os dados/Wi-Fi estão ligados e tente novamente. Se estiver dentro de um edifício, aproxime-se de uma janela ou porta.";
-        return "Não foi possível obter a localização. Verifique se a localização do telemóvel está ativada (e o modo avião desligado) e tente novamente.";
+            return "Não foi possível obter a localização a tempo. Verifique se a localização e os dados/Wi-Fi estão ligados e tente novamente. Se estiver dentro de um edifício, aproxime-se de uma janela ou porta. Android: ative também Definições > Localização > Precisão da localização Google.";
+        return "Não foi possível obter a localização. Verifique se a localização do telemóvel está ativada (e o modo avião e a poupança de bateria desligados) e tente novamente. Android: ative também Definições > Localização > Precisão da localização Google.";
     };
     // Shown inside a client card while location is slow, or after it failed. Location is mandatory
     // for a visit, so there is no way to skip it: the person keeps waiting or taps "Iniciar Visita" again.

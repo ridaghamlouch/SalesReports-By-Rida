@@ -1,0 +1,28 @@
+Plano de Rotas — versão 2026-11-28-rapido (abertura mais rápida)
+==================================================================
+
+O QUE MUDOU
+1. Excel (xlsx), PDF (jsPDF) e mapa (Leaflet) já não carregam ao abrir a app.
+   Carregam na primeira exportação / importação / mapa; logo após abrir, são
+   descarregados em segundo plano para continuarem a funcionar sem internet.
+2. O código da app saiu do index.html para app.min.js (minificado, ~146 KB em vez de ~198 KB)
+   e fica em cache separada: uma nova versão já não obriga a descarregar tudo outra vez.
+3. O aviso "Nova versão disponível" lê version.json (40 bytes) em vez do index.html
+   inteiro (~200 KB a cada 5 minutos).
+4. Service worker: bibliotecas com versão fixa abrem da cache (instantâneo, offline);
+   com rede fraca, a app abre da cache após 3 s em vez de ficar à espera.
+5. Logótipos das marcas reduzidos (152 KB -> 21 KB) e ícone pequeno icon-160.png no ecrã inicial.
+6. Texto cinzento claro um pouco mais escuro em fundos claros (mais legível ao sol).
+
+PUBLICAR (GitHub -> repo SalesReports-By-Rida -> pasta PlanoDeRotas_PWA -> Add file -> Upload files)
+Enviar TODOS estes ficheiros juntos, no mesmo envio:
+  index.html, app.min.js, app.src.js, version.json, sw.js, tailwind.css,
+  icon-160.png, logo_ama.png, logo_gloria.png, logo_solava.png, logo_ultra.png,
+  build.py, LEIA-ME.txt
+Atenção: o index.html novo não funciona sem o app.min.js — nunca enviar um sem o outro.
+
+PRÓXIMAS ALTERAÇÕES À APP
+  - Alterar app.src.js (código legível) — já NÃO o index.html.
+  - Mudar APP_BUILD em app.src.js e correr:  python3 build.py
+    (gera app.min.js e version.json e atualiza index.html e sw.js)
+  - Publicar: app.min.js, app.src.js, version.json, index.html, sw.js.

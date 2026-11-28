@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-28-rapido-2";
+const APP_BUILD = "2026-11-28-visitas-em-curso";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -367,7 +367,61 @@ function fsReportFail(path, e) {
     }
     catch (x) { }
 }
+// ---- Aviso "dados por enviar" ----
+// As gravações (visitas, encomendas) ficam primeiro no telemóvel e só depois chegam ao servidor.
+// Sem ligação (ou com a ligação "presa") podiam ficar horas só no telemóvel sem ninguém saber —
+// e a Administração / o supervisor não as viam. Agora, se ao fim de 15 s ainda houver dados por
+// enviar, aparece uma barra laranja; tocar nela força uma nova ligação ao servidor.
+let fsSyncSeq = 0, fsSyncShown = false;
+function fsSyncBar(state) {
+    try {
+        let bar = document.getElementById("fs-sync-bar");
+        if (!state) {
+            if (bar && fsSyncShown) {
+                bar.style.background = "#047857";
+                bar.textContent = "\u2713 Tudo enviado para o escritório.";
+                setTimeout(() => { try { bar.remove(); } catch (x) { } }, 3000);
+            }
+            else if (bar) bar.remove();
+            fsSyncShown = false;
+            return;
+        }
+        if (!bar) {
+            bar = document.createElement("div");
+            bar.id = "fs-sync-bar";
+            bar.setAttribute("role", "status");
+            bar.style.cssText = "position:fixed;left:8px;right:8px;top:max(8px,env(safe-area-inset-top));z-index:99997;background:#b45309;color:#fff;border-radius:10px;padding:8px 12px;font-size:12.5px;line-height:1.35;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.25);cursor:pointer;font-family:inherit;";
+            bar.onclick = fsSyncRetry;
+            document.body.appendChild(bar);
+        }
+        bar.style.background = "#b45309";
+        bar.textContent = state === "retry" ? "\u23F3 A tentar enviar…" : "\u23F3 Há visitas/encomendas ainda NÃO enviadas ao escritório (ficam guardadas neste telemóvel). Verifique a internet e toque aqui para enviar agora.";
+        fsSyncShown = true;
+    }
+    catch (x) { }
+}
+function fsWatchSync() {
+    if (!db || typeof db.waitForPendingWrites !== "function") return;
+    const seq = ++fsSyncSeq;
+    let done = false;
+    db.waitForPendingWrites().then(() => { done = true; if (seq === fsSyncSeq) fsSyncBar(null); }, () => { });
+    setTimeout(() => { if (!done && seq === fsSyncSeq) fsSyncBar("pending"); }, 15000);
+}
+function fsSyncRetry() {
+    if (!db) return;
+    fsSyncBar("retry");
+    // fecha e reabre a ligação ao Firestore: resolve ligações "presas" depois de mudar de rede
+    Promise.resolve().then(() => db.disableNetwork()).then(() => db.enableNetwork()).catch(() => { }).then(() => {
+        const seq = ++fsSyncSeq;
+        let done = false;
+        db.waitForPendingWrites().then(() => { done = true; if (seq === fsSyncSeq) fsSyncBar(null); }, () => { });
+        setTimeout(() => { if (!done && seq === fsSyncSeq) fsSyncBar("pending"); }, 12000);
+    });
+}
+window.addEventListener("load", () => setTimeout(fsWatchSync, 3000)); // dados que ficaram por enviar de antes
+window.addEventListener("online", () => { if (fsSyncShown) fsSyncRetry(); });
 async function fsSet(path, data, merge) {
+    fsWatchSync();
     try {
         await db.doc(path).set(data, merge ? { merge: true } : undefined);
         return true;
@@ -379,6 +433,7 @@ async function fsSet(path, data, merge) {
     }
 }
 async function fsUpdate(path, fields) {
+    fsWatchSync();
     try {
         await db.doc(path).update(fields);
         return true;
@@ -393,6 +448,7 @@ async function fsUpdate(path, fields) {
 // Antes gravava-se o dia inteiro a partir da cópia do telemóvel, o que podia apagar
 // entradas feitas noutro telemóvel. Cria o documento se ainda não existir.
 async function fsSetEntry(path, id, record) {
+    fsWatchSync();
     try {
         await db.doc(path).set({ entries: { [id]: record } }, { mergeFields: [new firebase.firestore.FieldPath("entries", String(id))] });
         return true;
@@ -405,6 +461,7 @@ async function fsSetEntry(path, id, record) {
 }
 // Apaga UMA entrada de um documento do dia.
 async function fsDeleteEntry(path, id) {
+    fsWatchSync();
     try {
         await db.doc(path).update(new firebase.firestore.FieldPath("entries", String(id)), firebase.firestore.FieldValue.delete());
         return true;
@@ -572,7 +629,7 @@ async function buildEntityReport(collectionName, entitySlug, dates, clients) {
                 status: rec.status || "visited",
                 reason: rec.reason || "",
                 notes: rec.notes || "",
-                time: rec.timestamp ? formatTimeLocal(rec.timestamp) : "",
+                time: rec.timestamp ? formatTimeLocal(rec.timestamp) : (rec.startTime ? formatTimeLocal(rec.startTime) : ""),
                 gps: rec.gps || null,
                 gpsSkipped: rec.gpsSkipped || false,
                 order: rec.order || null,
@@ -950,7 +1007,7 @@ function buildDayRoute(entries, clients) {
         return {
             lat: rec.gps.lat,
             lng: rec.gps.lng,
-            time: rec.timestamp ? formatTimeLocal(rec.timestamp) : "",
+            time: rec.timestamp ? formatTimeLocal(rec.timestamp) : (rec.startTime ? formatTimeLocal(rec.startTime) : ""),
             label: client ? client.name : id,
             market: client ? client.market : "",
             timestamp: rec.timestamp || "",
@@ -7561,10 +7618,12 @@ function RouteApp() {
             const skippedN = repClients.filter((c) => { var _a; return ((_a = v[c.id]) === null || _a === void 0 ? void 0 : _a.status) === "skipped"; }).length;
             const scheduledIds = new Set(repClients.map((c) => c.id));
             const extraVisitedN = Object.entries(v).filter(([clientId, rec]) => !scheduledIds.has(clientId) && rec.status === "visited").length;
+            const inProgressE = Object.entries(v).find(([, rec]) => rec && rec.status === "in_progress");
+            const inProgressInfo = inProgressE ? { clientId: inProgressE[0], startTime: inProgressE[1].startTime } : null;
             setAdminTodaySummary((prev) => {
                 const existing = prev.perRep.find((r) => r.slug === rep.slug);
                 const next = prev.perRep.filter((r) => r.slug !== rep.slug);
-                next.push({ slug: rep.slug, name: rep.name, total: repClients.length, visited: visitedN, skipped: skippedN, extraVisited: extraVisitedN, salesKz: (existing === null || existing === void 0 ? void 0 : existing.salesKz) || 0, orderCount: (existing && existing.orderCount) || 0 });
+                next.push({ slug: rep.slug, name: rep.name, total: repClients.length, visited: visitedN, skipped: skippedN, extraVisited: extraVisitedN, inProgress: inProgressInfo, salesKz: (existing === null || existing === void 0 ? void 0 : existing.salesKz) || 0, orderCount: (existing && existing.orderCount) || 0 });
                 return Object.assign(Object.assign({}, prev), { perRep: next, loading: false });
             });
         }; if (mtWeekLoad(clients, rep, dayName, weekLabel, weekByRep, onVisits)) waitWeek[rep.slug] = 1; return fsSubscribeDoc(`visits/${dateISO}_${rep.slug}`, onVisits); });
@@ -7638,7 +7697,7 @@ function RouteApp() {
             const extraVisitedN = Object.entries(v).filter(([clientId, rec]) => !scheduledIds.has(clientId) && rec.status === "visited").length;
             setSupDashData((prev) => {
                 const next = prev.filter((r) => r.rep.slug !== rep.slug);
-                next.push({ rep, total: repClients.length, visited: visitedN, skipped: skippedN, extraVisited: extraVisitedN, repClients, entries: v });
+                next.push({ rep, total: repClients.length, visited: visitedN, skipped: skippedN, extraVisited: extraVisitedN, inProgress: Object.values(v).filter((rec) => rec && rec.status === "in_progress").length, repClients, entries: v });
                 next.sort((a, b) => (roster[activeSupervisor] || []).findIndex((r) => r.slug === a.rep.slug) - (roster[activeSupervisor] || []).findIndex((r) => r.slug === b.rep.slug));
                 return next;
             });
@@ -8569,6 +8628,9 @@ function RouteApp() {
                         React.createElement("span", { className: "text-rose-500 font-semibold" },
                             fRep.reduce((a, r) => a + r.skipped, 0),
                             " n\u00E3o visitados"),
+                        fRep.some((r) => r.inProgress) && React.createElement("span", { className: "text-sky-600 font-semibold" },
+                            fRep.filter((r) => r.inProgress).length,
+                            " em visita"),
                         React.createElement("span", { className: "text-stone-500" },
                             fRep.reduce((a, r) => a + r.total, 0),
                             " agendados")),
@@ -8576,8 +8638,9 @@ function RouteApp() {
                         const isOpen = adminExpandedRep === r.slug;
                         return (React.createElement("div", { key: r.slug, className: "border-b border-stone-100 last:border-0 pb-1 last:pb-0" },
                             React.createElement("button", { onClick: () => setAdminExpandedRep(isOpen ? null : r.slug), className: "w-full flex items-center justify-between text-xs text-stone-500 py-1" },
-                                React.createElement("span", { className: "text-stone-700" }, r.name),
-                                React.createElement("span", { className: "flex items-center gap-1.5" },
+                                React.createElement("span", { className: "text-stone-700 text-left" }, r.name,
+                                    r.inProgress && React.createElement("span", { className: "block text-[11px] text-sky-600 font-semibold" }, "\u25CF Em visita: " + ((visitClients.find((c) => c.id === r.inProgress.clientId) || clients.find((c) => c.id === r.inProgress.clientId) || {}).name || r.inProgress.clientId) + (r.inProgress.startTime ? " · desde " + formatTimeLocal(r.inProgress.startTime) : ""))),
+                                React.createElement("span", { className: "flex items-center gap-1.5 shrink-0" },
                                     r.total ? r.visited + r.skipped + "/" + r.total : (r.extraVisited + (r.extraVisited === 1 ? " visita" : " visitas")),
                                     r.total > 0 && r.extraVisited > 0 && React.createElement("span", { className: "text-sky-600 font-semibold" },
                                         "+",
@@ -9737,7 +9800,8 @@ function RouteApp() {
                             return (React.createElement("div", { key: r.rep.slug, className: "bg-white rounded-xl border border-stone-200 shadow-sm overflow-hidden" },
                                 React.createElement("button", { className: "w-full text-left p-3", onClick: () => setExpandedRepSlug(isOpen ? null : r.rep.slug) },
                                     React.createElement("div", { className: "flex items-center justify-between mb-1.5" },
-                                        React.createElement("div", { className: "font-medium text-stone-800 text-sm" }, r.rep.name),
+                                        React.createElement("div", { className: "font-medium text-stone-800 text-sm" }, r.rep.name,
+                                            r.inProgress > 0 && React.createElement("span", { className: "ml-2 inline-flex items-center text-[10px] font-bold text-sky-700 bg-sky-50 border border-sky-200 rounded px-1.5 py-0.5 align-middle" }, "\u25CF EM VISITA")),
                                         React.createElement("div", { className: "text-xs text-stone-500 flex items-center gap-1.5" },
                                             r.total ? r.visited + r.skipped + "/" + r.total : (r.extraVisited + (r.extraVisited === 1 ? " visita hoje" : " visitas hoje")),
                                             r.total > 0 && r.extraVisited > 0 && React.createElement("span", { className: "text-sky-600 font-semibold" },
@@ -9781,7 +9845,7 @@ function RouteApp() {
                                     }),
                                     (() => {
                                         const scheduledIds = new Set(r.repClients.map((c) => c.id));
-                                        const extraIds = Object.keys(r.entries || {}).filter((id) => { var _a; return !scheduledIds.has(id) && ((_a = r.entries[id]) === null || _a === void 0 ? void 0 : _a.status) === "visited"; });
+                                        const extraIds = Object.keys(r.entries || {}).filter((id) => { var _a; const st = (_a = r.entries[id]) === null || _a === void 0 ? void 0 : _a.status; return !scheduledIds.has(id) && (st === "visited" || st === "in_progress"); });
                                         if (extraIds.length === 0)
                                             return null;
                                         return (React.createElement(React.Fragment, null,
@@ -9795,11 +9859,12 @@ function RouteApp() {
                                                         React.createElement("div", { className: "text-[11px] text-stone-400" }, c === null || c === void 0 ? void 0 :
                                                             c.market,
                                                             (c === null || c === void 0 ? void 0 : c.oldCode) ? ` · ${c.oldCode}` : ""),
-                                                        (rec === null || rec === void 0 ? void 0 : rec.startTime) && (React.createElement("div", { className: "text-[11px] text-emerald-600 mt-0.5" },
+                                                        (rec === null || rec === void 0 ? void 0 : rec.startTime) && (React.createElement("div", { className: "text-[11px] mt-0.5 " + (rec.status === "in_progress" ? "text-sky-600" : "text-emerald-600") },
+                                                            rec.status === "in_progress" ? "Em curso desde " : "",
                                                             formatTimeLocal(rec.startTime),
                                                             rec.endTime ? ` – ${formatTimeLocal(rec.endTime)}` : "",
                                                             rec.durationMinutes != null && ` · ${rec.durationMinutes} min`))),
-                                                    React.createElement(StatusChip, { status: "visited" })));
+                                                    React.createElement(StatusChip, { status: rec && rec.status === "in_progress" ? "in_progress" : "visited" })));
                                             })));
                                     })()))));
                         }),

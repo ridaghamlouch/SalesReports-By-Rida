@@ -1,8 +1,8 @@
 // Gerado/atualizado por build.py — APP_BUILD e a lista SHELL mudam a cada versão.
-const APP_BUILD = "2026-11-28-rapido-2";
+const APP_BUILD = "2026-11-28-visitas-em-curso";
 const CACHE_NAME = "plano-rotas-" + APP_BUILD;   // ficheiros da app (muda a cada versão)
 const LIB_CACHE = "plano-rotas-libs-v1";          // bibliotecas com versão fixa (nunca mudam)
-const SHELL = ["./", "./index.html", "./app.min.js?v=2026-11-28-rapido-2", "./tailwind.css?v=2026-11-28", "./manifest.webmanifest", "./icon-192.png", "./icon-160.png"];
+const SHELL = ["./", "./index.html", "./app.min.js?v=2026-11-28-visitas-em-curso", "./tailwind.css?v=2026-11-28", "./manifest.webmanifest", "./icon-192.png", "./icon-160.png"];
 const HTML_TIMEOUT_MS = 3000;
 
 self.addEventListener("install", (event) => {

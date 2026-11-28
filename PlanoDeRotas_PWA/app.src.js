@@ -301,7 +301,7 @@ catch (e) {
 // Bumped by hand on every delivered index.html. Lets the update-check below tell a
 // genuinely stale open tab/PWA (still running old JS in memory) apart from a real bug —
 // see the update banner set up at the bottom of this file.
-const APP_BUILD = "2026-11-28-rapido";
+const APP_BUILD = "2026-11-28-rapido-2";
 // Firestore rejects any single document over 1 MiB. Both the client list
 // (clients/current) and the product list (products/current) are stored as ONE
 // document, so imports are checked against this conservative limit up front
@@ -1212,17 +1212,62 @@ function mtGuessCat(desc, fam, sub) {
 }
 // ---- storage (small in-memory cache on top of Firestore) ----
 const mtCache = {};
+// Live copies of the big report documents (vendas, metas, equipa, artigos...).
+// Before: every time a report screen opened, its documents (200-400 KB each) were downloaded
+// again from Firebase, even when nothing had changed — on mobile data that meant a long
+// "A carregar...". Now the first read opens a Firestore listener that keeps a local copy
+// up to date (Firebase only sends a document again when it changes), so opening the same
+// report again is immediate and still shows the latest data.
+const mtLive = {};
+const MT_LIVE_WAIT_MS = 25000;
+function mtWatch(path) {
+    if (mtLive[path]) return mtLive[path];
+    const w = mtLive[path] = { ok: false, raw: null, cached: undefined };
+    w.ready = new Promise((resolve) => {
+        let done = false;
+        const finish = (ok) => { if (!done) { done = true; w.ok = ok; resolve(); } };
+        const timer = setTimeout(() => {
+            // no answer from the server: use the phone's saved copy if there is one, else the old way
+            if (w.cached !== undefined) { w.raw = w.cached; finish(true); } else finish(false);
+        }, MT_LIVE_WAIT_MS);
+        try {
+            w.unsub = db.doc(path).onSnapshot({ includeMetadataChanges: true }, (snap) => {
+                const data = snap.exists ? snap.data() : null;
+                if (snap.metadata.fromCache) {
+                    w.cached = data;
+                    if (navigator.onLine === false) { w.raw = data; clearTimeout(timer); finish(true); }
+                    return;
+                }
+                w.raw = data;
+                clearTimeout(timer);
+                finish(true);
+            }, (err) => {
+                console.error("mtWatch error", path, err);
+                clearTimeout(timer);
+                delete mtLive[path];
+                finish(false);
+            });
+        } catch (e) { clearTimeout(timer); delete mtLive[path]; finish(false); }
+    });
+    return w;
+}
+async function mtFetch(path) {
+    const w = mtWatch(path);
+    await w.ready;
+    if (!w.ok) return fsGetDoc(path);
+    return w.raw ? Object.assign({}, w.raw) : null;
+}
 // A table too big for one document is saved in parts: the main document keeps the first rows plus
 // "parts" (how many) and "pv" (a stamp); the other rows go to "<path>_p1", "<path>_p2", ... with the same stamp.
 async function mtGet(path, fresh) {
     if (!fresh && Object.prototype.hasOwnProperty.call(mtCache, path)) return mtCache[path];
-    let d = await fsGetDoc(path);
+    let d = await mtFetch(path);
     const n = d ? Number(d.parts) || 1 : 1;
     if (d && n > 1 && Array.isArray(d.rows)) {
         let rows = null;
         for (let attempt = 0; attempt < 3 && !rows; attempt++) {
             if (attempt) { await sleepMs(1500); d = await fsGetDoc(path); if (!d || !(Number(d.parts) > 1)) break; }
-            const rest = await Promise.all(Array.from({ length: (Number(d.parts) || 1) - 1 }, (_, i) => fsGetDoc(path + "_p" + (i + 1))));
+            const rest = await Promise.all(Array.from({ length: (Number(d.parts) || 1) - 1 }, (_, i) => (attempt ? fsGetDoc : mtFetch)(path + "_p" + (i + 1))));
             if (rest.every((x) => x && Array.isArray(x.rows) && x.pv === d.pv)) rows = d.rows.concat(...rest.map((x) => x.rows));
         }
         if (d && Number(d.parts) > 1) {
